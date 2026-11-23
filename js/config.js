@@ -1,5 +1,5 @@
 /**
- * 全局配置与运行时状态。
+ * 全局配置。
  * 想调效果基本只改这一个文件就够了。
  */
 
@@ -40,39 +40,88 @@ export const CONFIG = {
     },
 
     photos: {
-        maxCount: 120,           // 上限，防止选中一个上千张的文件夹后显存爆掉
+        /**
+         * 上限从 120 降到 64。
+         * 一张手机原图 4000×3000 直接上传成纹理要 ~48MB 显存，选一个十张的文件夹
+         * 就是半张显卡 —— 超了之后 WebGL 不报错，只是纹理默默变白，看起来就是
+         * 「空白图片」。现在每张照片进 GPU 前会先缩到 maxTextureEdge，
+         * 64 张合计约 90MB，稳。
+         */
+        maxCount: 64,
+        maxTextureEdge: 512,     // 纹理长边上限（像素）
         loops: 3,                // 照片沿树身螺旋绕几圈
-        placeholderCount: 5,     // 一张照片都加载不到时挂几张占位图
+        placeholderCount: 6,     // 一张照片都加载不到时挂几张提示卡
+        longEdge: 2.8,           // 照片长边的世界尺寸（树高 24，太小的照片根本看不清）
+        radialOffset: 3.9,       // 比树身半径再外扩多少，让照片浮在装饰物外面
+        border: 0.13,            // 金框宽度（世界单位）
+    },
+
+    /** 「抽一张照片到眼前」的表现参数 */
+    focus: {
+        distance: 13.5,          // 照片停在相机前方多远
+        fillHeight: 0.6,         // 占可见高度的比例
+        fillWidth: 0.72,         // 占可见宽度的比例（竖图时生效）
+        inDuration: 0.62,        // 飞到眼前用多久（秒）
+        outDuration: 0.5,        // 飞回树上用多久
+        bloomWhileFocus: 0.18,   // 看照片时把辉光压下去，否则照片会糊成一片白
     },
 
     preload: {
         /**
          * 把照片放进 ./images/，再建一个 images/manifest.json 列出文件名即可自动加载。
-         * 参考 images/manifest.example.json。没有这个文件就静默跳过 —— 不会产生 404 刷屏。
+         * 参考 images/manifest.example.json。没有这个文件就静默跳过。
          */
         manifest: './images/manifest.json',
 
-        // 没有任何本地照片时的兜底示例图（来自 Unsplash）
+        /**
+         * 没有任何本地照片时用的默认示例图。
+         * 特意放在 assets/ 下、并且是本地文件：以前指向 Unsplash 外链，
+         * 国内经常拉不下来，Promise 一挂就是几十秒，树上空空如也。
+         */
         fallbackImages: [
-            'https://images.unsplash.com/photo-1543589077-47d81606c1bf?q=80&w=600',
-            'https://images.unsplash.com/photo-1576919228236-a097c32a5cd4?q=80&w=600',
-            'https://images.unsplash.com/photo-1512389142860-9c449e58a543?q=80&w=600',
+            './assets/photos/01-bokeh.jpg',
+            './assets/photos/02-aurora.jpg',
+            './assets/photos/03-snowforest.jpg',
+            './assets/photos/04-window.jpg',
+            './assets/photos/05-pine.jpg',
+            './assets/photos/06-ornaments.jpg',
         ],
+
+        timeout: 6000,           // 单张图最多等多久（毫秒），超时就跳过，别拖住整棵树
     },
 
     gestures: {
-        fistExtensionRatio: 1.5,   // 低于此值判定为握拳
-        openExtensionRatio: 1.7,   // 高于此值判定为张开
-        pinchRatio: 0.35,          // 低于此值判定为捏合
-        minHandSize: 0.02,         // 手太小（太远）时忽略，避免抖动
+        /**
+         * 判定全部用「掌宽」（食指根 5 ↔ 小指根 17）做归一化基准。
+         * 比用腕-中指根的长度稳定得多：手指一伸一屈它就变，掌宽不会。
+         */
+        pinchEnter: 0.45,        // 拇指尖↔食指尖 / 掌宽 低于此值 → 捏合
+        pinchExit: 0.62,         // 高于此值才算松开（滞回，防边界抖动）
+        pinchMinReach: 1.3,      // 食指伸出程度下限，用来排除「握拳时拇指贴着食指」
+        fingerStraightRatio: 1.18, // 指尖到手腕 / 近端指节到手腕 超过此值算伸直
+        openMinFingers: 4,       // 至少几根手指伸直算张开
+        fistMaxFingers: 1,       // 至多几根算握拳
+        minPalmWidth: 0.03,      // 掌宽小于此值说明手太远 / 太糊，忽略这一帧
+        confirmFrames: 3,        // 连续多少帧一致才认这个手势（防抖）
+        pinchReleaseMs: 260,     // 捏合松开后等多久才把照片送回去（防误抖）
+        smoothing: 0.42,         // 手位置 EMA 系数，越小越稳但越迟
+        maxDetectFps: 30,        // 手势识别限帧，给渲染留出时间
+        wasmProbeTimeout: 2500,  // 探测 wasm 镜像的超时（毫秒）
     },
 };
 
-/** 运行时状态，模块之间共享读写。 */
+/**
+ * 运行时状态，模块之间共享读写。
+ *
+ * 注意：这里只有「树」的两种形态。抽照片不再是一种 mode ——
+ * 以前捏合会把 mode 改成 FOCUS，而粒子更新里 FOCUS 会把整棵树都送到星云球面上，
+ * 于是捏一下手指整棵树就炸开，非常突兀。现在照片的飞入飞出由 focus.js 单独管，
+ * 树该是什么样还是什么样。
+ */
 export const STATE = {
-    mode: 'TREE',                  // TREE | SCATTER | FOCUS
-    focusTarget: null,
+    mode: 'TREE',                  // TREE | SCATTER
     hand: { detected: false, x: 0, y: 0 },
+    hands: [],                     // 每帧识别到的手：[{ label, x, y }]
     rotation: { x: 0, y: 0 },
     userControllingCamera: false,  // 鼠标拖拽期间暂停自转
 };

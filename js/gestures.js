@@ -1,44 +1,81 @@
 /**
- * MediaPipe 手势识别。
+ * MediaPipe 手势识别，支持两只手。
  *
  * 设计前提：这一整块都是「锦上添花」。没有摄像头、用户拒绝授权、CDN 连不上，
- * 都只会让手势失效，绝不能影响 3D 场景的渲染 —— 旧版本把 `await initMediaPipe()`
- * 放在 init() 里且没有兜底，模型下载一失败就永远停在 loading 界面。
+ * 都只会让手势失效，绝不能影响 3D 场景的渲染。
+ *
+ * 这一版相比原来的三处改动，都是为了「灵敏」：
+ *
+ * 1. `numHands` 从 1 改成 2。原来只认「最确信的那只手」，两只手在画面里时
+ *    识别结果会在两手之间来回跳，表现为疯狂抖动。
+ * 2. 归一化基准从「腕→中指根」换成「掌宽」。前者手指一伸一屈就变长，
+ *    同一个捏合动作在手张开时会算出完全不同的比值。
+ * 3. 加了双阈值滞回 + 连续帧确认。临界点左右抖是必然的，没有滞回就会
+ *    在「捏合 / 张开」之间反复横跳。
  */
 import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
 import { CONFIG, STATE } from './config.js';
-import { particleSystem } from './particle.js';
-import { setStatus, setDebug } from './ui.js';
+import { grabNextPhoto, releasePhoto } from './focus.js';
+import { setStatus, setDebug, toast } from './ui.js';
 
-const WASM_PATH = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm';
-const MODEL_PATH =
+const MODEL_URL =
     'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
 
-const MODE_LABEL = {
-    TREE: '握拳 · 聚成树',
-    SCATTER: '张开 · 星云',
-    FOCUS: '捏合 · 看照片',
-};
+/**
+ * 允许 ?model=... / ?wasm=... 覆盖资源地址。
+ * 官方模型的域名在部分地区连不上，自建镜像时改 URL 比改源码方便得多。
+ */
+function overrideParam(key) {
+    try {
+        return new URLSearchParams(location.search).get(key) || null;
+    } catch {
+        return null;
+    }
+}
 
-// 连续出错多少帧才提示用户（偶发单帧失败不值得打扰）
+/**
+ * wasm 镜像。
+ *
+ * 8.7MB 的 wasm 从 cdn.jsdelivr.net 拉，国内实测能等半分钟 —— 这段时间里
+ * 手势完全没反应，用户只会得出「这东西不灵敏」的结论。npmmirror 是国内镜像，
+ * 实测快一个量级，所以开跑之前先探一下谁最快。
+ */
+const WASM_MIRRORS = [
+    'https://registry.npmmirror.com/@mediapipe/tasks-vision/0.10.3/files/wasm',
+    'https://fastly.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm',
+    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm',
+];
+
+/** [指尖, 近端指节]，除大拇指外的四根：食、中、无名、小指 */
+const FINGERS = [[8, 6], [12, 10], [16, 14], [20, 18]];
+
 const ERROR_LIMIT = 30;
+const MISS_LIMIT = 3;
 
 let handLandmarker = null;
 let video = null;
 let lastVideoTime = -1;
+let lastDetectAt = 0;
 let consecutiveErrors = 0;
+
+/** 两个槽位，一人最多两只手 */
+const trackers = [createTracker(), createTracker()];
+
+let grabbing = false;
+let lastPinchAt = 0;
+let handPosInit = false;
+
+/* ------------------------------------------------------------------ 启动 */
 
 /** @returns {Promise<boolean>} 手势是否成功启用 */
 export async function initGestures() {
     video = document.getElementById('webcam');
 
+    setStatus('正在加载手势模型…');
     try {
-        const vision = await FilesetResolver.forVisionTasks(WASM_PATH);
-        handLandmarker = await HandLandmarker.createFromOptions(vision, {
-            baseOptions: { modelAssetPath: MODEL_PATH, delegate: 'GPU' },
-            runningMode: 'VIDEO',
-            numHands: 1,
-        });
+        const base = await pickWasmBase();
+        const vision = await FilesetResolver.forVisionTasks(base);
+        handLandmarker = await createLandmarker(vision);
     } catch (err) {
         console.warn('[tree] 手势模型加载失败，仅鼠标模式可用', err);
         disableWebcamUI('手势模型加载失败 · 鼠标仍可操作');
@@ -50,12 +87,20 @@ export async function initGestures() {
         return false;
     }
 
+    setStatus('模型就绪，等待摄像头授权…');
     try {
         const stream = await navigator.mediaDevices.getUserMedia({
-            video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30 } },
+            video: {
+                width: { ideal: 640 },
+                height: { ideal: 480 },
+                frameRate: { ideal: 30 },
+                facingMode: 'user',
+            },
         });
         video.srcObject = stream;
-        video.addEventListener('loadeddata', predictWebcam, { once: true });
+        // 注意要包一层 rAF：predictWebcam 的第一个参数是 rAF 给的时间戳，
+        // 直接当监听器用的话拿到的是 Event 对象，后面的限帧判断全是 NaN。
+        video.addEventListener('loadeddata', () => requestAnimationFrame(predictWebcam), { once: true });
         setStatus('摄像头已开启，伸手试试');
         return true;
     } catch (err) {
@@ -65,22 +110,80 @@ export async function initGestures() {
     }
 }
 
+/** GPU 跑不动就退 CPU —— 有些核显上 GPU delegate 会直接创建失败。 */
+async function createLandmarker(vision) {
+    const modelAssetPath = overrideParam('model') || MODEL_URL;
+
+    for (const delegate of ['GPU', 'CPU']) {
+        try {
+            return await HandLandmarker.createFromOptions(vision, {
+                baseOptions: { modelAssetPath, delegate },
+                runningMode: 'VIDEO',
+                numHands: 2,
+            });
+        } catch (err) {
+            console.warn(`[tree] 手势模型 ${delegate} 后端不可用，尝试下一个`, err?.message ?? err);
+        }
+    }
+    throw new Error('no usable delegate');
+}
+
+/** 挑最快的 wasm 镜像；全都探不通就退回官方 CDN。 */
+async function pickWasmBase() {
+    const custom = overrideParam('wasm');
+    const mirrors = custom ? [custom, ...WASM_MIRRORS] : WASM_MIRRORS;
+
+    try {
+        return await Promise.any(mirrors.map((base) => probeMirror(base)));
+    } catch {
+        return mirrors[mirrors.length - 1];
+    }
+}
+
+function probeMirror(base) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), CONFIG.gestures.wasmProbeTimeout);
+
+    // 只取 1KB 试探：能连通、且带 CORS 头就说明可以直接用
+    return fetch(`${base}/vision_wasm_internal.wasm`, {
+        signal: controller.signal,
+        headers: { Range: 'bytes=0-1024' },
+    })
+        .then((res) => {
+            if (!res.ok) throw new Error(String(res.status));
+            return base;
+        })
+        .finally(() => clearTimeout(timer));
+}
+
 function disableWebcamUI(message) {
     const wrapper = document.getElementById('webcam-wrapper');
     if (wrapper) wrapper.style.display = 'none';
     setStatus(message);
+    // 预览框被藏起来了，状态文字也跟着看不见，所以再弹一条提示
+    toast(message, 4200);
 }
 
-function predictWebcam() {
+/* ------------------------------------------------------------------ 主循环 */
+
+function predictWebcam(now) {
     // rAF 必须排在最前：一旦 detectForVideo 抛错（video 尚未就绪、GPU 上下文
     // 丢失、ROI 异常），循环就再也排不上队，手势会在余下的整个会话里静默失效。
     requestAnimationFrame(predictWebcam);
 
+    if (typeof now !== 'number') now = performance.now();
     if (!handLandmarker || video.currentTime === lastVideoTime) return;
+
+    // 手势识别限帧。60fps 的显示器上每帧都跑一次推理，渲染会被拖到掉帧，
+    // 「丝滑」先输在这里。
+    const interval = 1000 / (CONFIG.gestures.maxDetectFps || 30);
+    if (now - lastDetectAt < interval) return;
+
+    lastDetectAt = now;
     lastVideoTime = video.currentTime;
 
     try {
-        processGestures(handLandmarker.detectForVideo(video, performance.now()));
+        processGestures(handLandmarker.detectForVideo(video, now));
     } catch (err) {
         // 偶发一帧失败无所谓，下一帧再来；连续失败才值得提醒
         if (++consecutiveErrors === ERROR_LIMIT) {
@@ -93,68 +196,274 @@ function predictWebcam() {
     consecutiveErrors = 0;
 }
 
-/**
- * 用「相对比例」而非绝对像素距离判定手势，
- * 这样手离摄像头远近不同也能稳定识别。
- */
+/* ------------------------------------------------------------------ 识别 */
+
 function processGestures(result) {
-    if (!result.landmarks?.length) {
-        STATE.hand.detected = false;
-        setStatus('未检测到手');
-        setDebug('—');
-        return;
+    const detections = (result?.landmarks ?? [])
+        .map(analyze)
+        .filter((a) => a && a.palmWidth >= CONFIG.gestures.minPalmWidth);
+
+    const pairs = assign(detections);
+    const matched = new Set(pairs.map(([, t]) => t));
+
+    for (const [a, tracker] of pairs) updateTracker(tracker, a);
+    for (const tracker of trackers) if (!matched.has(tracker)) markMissing(tracker);
+
+    decide();
+}
+
+/**
+ * 一帧的关键点 → 几个能判手势的标量。
+ *
+ * 全部用「掌宽」（食指根 ↔ 小指根）做归一化，手掌撑开的角度不会影响比值。
+ * 距离算三维：手正对镜头时二维投影会把手指压短，加上 z 才稳。
+ */
+function analyze(lm) {
+    if (!lm || lm.length < 21) return null;
+
+    const palm = lm[0];
+    const indexMcp = lm[5];
+    const pinkyMcp = lm[17];
+    const midMcp = lm[9];
+
+    const palmWidth = dist3(indexMcp, pinkyMcp);
+    const palmLen = dist3(palm, midMcp);
+    if (palmWidth < 1e-6 || palmLen < 1e-6) return null;
+
+    let extended = 0;
+    for (const [tip, pip] of FINGERS) {
+        // 指尖比近端指节离手腕更远 → 这根手指是伸直的
+        if (dist3(lm[tip], palm) > dist3(lm[pip], palm) * CONFIG.gestures.fingerStraightRatio) extended++;
     }
 
-    const lm = result.landmarks[0];
-    const wrist = lm[0];
-    const middleMCP = lm[9];   // 中指指根
+    return {
+        palmWidth,
+        extended,
+        pinch: dist3(lm[4], lm[8]) / palmWidth,          // 拇指尖 ↔ 食指尖
+        reach: dist3(lm[8], palm) / palmLen,            // 食指伸出程度
+        // 取负号做镜像：预览画面用 CSS scaleX(-1) 翻转过（照镜子的直觉），
+        // MediaPipe 给的是未翻转的原始坐标，不翻的话画面和操作对不上。
+        x: -(midMcp.x - 0.5) * 2,
+        y: (midMcp.y - 0.5) * 2,
+    };
+}
 
-    // 以「手腕→中指指根」为基准长度，抵消远近带来的尺度差异。
-    // 这道门槛必须在写 STATE.hand 之前：手太小说明人离得很远或识别不稳，
-    // 此时的坐标抖得厉害，一旦写进去就会直接甩动 SCATTER 模式下的视角。
-    const handSize = Math.hypot(middleMCP.x - wrist.x, middleMCP.y - wrist.y);
-    if (handSize < CONFIG.gestures.minHandSize) {
-        STATE.hand.detected = false;
-        return;
-    }
+function dist3(a, b) {
+    return Math.hypot(a.x - b.x, a.y - b.y, (a.z ?? 0) - (b.z ?? 0));
+}
 
-    STATE.hand.detected = true;
+function createTracker() {
+    return {
+        present: false,
+        missing: MISS_LIMIT,
+        x: 0,
+        y: 0,
+        palmWidth: 0,
+        extended: 0,
+        pinch: 1,
+        reach: 0,
+        label: 'IDLE',
+        candidate: null,
+        candidateCount: 0,
+        pinching: false,
+    };
+}
 
-    // 取负号做镜像：预览画面用 CSS scaleX(-1) 翻转过（照镜子的直觉），
-    // 而 MediaPipe 给的是未翻转的原始坐标。不翻的话，用户看着预览里手往右移，
-    // 树却往反方向转 —— 画面和操作对不上。
-    STATE.hand.x = -(middleMCP.x - 0.5) * 2;
-    STATE.hand.y = (middleMCP.y - 0.5) * 2;
-
-    const tips = [lm[8], lm[12], lm[16], lm[20]];
-    const avgTipDist =
-        tips.reduce((sum, t) => sum + Math.hypot(t.x - wrist.x, t.y - wrist.y), 0) / tips.length;
-
-    const extensionRatio = avgTipDist / handSize;
-    const pinchRatio = Math.hypot(lm[4].x - lm[8].x, lm[4].y - lm[8].y) / handSize;
-
-    setDebug(
-        `size ${handSize.toFixed(3)} · ext ${extensionRatio.toFixed(2)} · pinch ${pinchRatio.toFixed(2)}`
-    );
-
-    const g = CONFIG.gestures;
-
-    // 先判握拳：否则大拇指贴近食指时会被误判成「捏合」
-    if (extensionRatio < g.fistExtensionRatio) {
-        STATE.mode = 'TREE';
-        STATE.focusTarget = null;
-    } else if (pinchRatio < g.pinchRatio) {
-        if (STATE.mode !== 'FOCUS') {
-            STATE.mode = 'FOCUS';
-            const photos = particleSystem.filter((p) => p.type === 'PHOTO');
-            STATE.focusTarget = photos.length
-                ? photos[Math.floor(Math.random() * photos.length)].mesh
-                : null;
+/**
+ * 把这一帧检测到的手配到两个槽位上，尽量「按位置就近」，而不是按数组下标。
+ * MediaPipe 两只手的顺序是按置信度排的，会互换；按下标取会让两只手的手势
+ * 互相串味（左手张开、右手捏合，结果来回跳）。
+ */
+function assign(detections) {
+    const pairs = [];
+    for (let d = 0; d < detections.length; d++) {
+        for (let t = 0; t < trackers.length; t++) {
+            if (!trackers[t].present) continue;
+            pairs.push([Math.hypot(detections[d].x - trackers[t].x, detections[d].y - trackers[t].y), d, t]);
         }
-    } else if (extensionRatio > g.openExtensionRatio) {
-        STATE.mode = 'SCATTER';
-        STATE.focusTarget = null;
+    }
+    pairs.sort((a, b) => a[0] - b[0]);
+
+    const usedD = new Set();
+    const usedT = new Set();
+    const result = [];
+
+    for (const [, d, t] of pairs) {
+        if (usedD.has(d) || usedT.has(t)) continue;
+        usedD.add(d);
+        usedT.add(t);
+        result.push([detections[d], trackers[t]]);
     }
 
-    setStatus(MODE_LABEL[STATE.mode] ?? STATE.mode);
+    // 多出来的检测（新出现的手）交给空槽位。
+    // 注意 findIndex 的回调拿到的是 tracker 对象，而 usedT 里存的是下标，
+    // 写成 `!usedT.has(t)` 会永远命中 0 号槽位，两只手就会互相覆盖。
+    for (let d = 0; d < detections.length; d++) {
+        if (usedD.has(d)) continue;
+        const slot = trackers.findIndex((_, index) => !usedT.has(index));
+        if (slot < 0) break;
+        usedT.add(slot);
+        result.push([detections[d], trackers[slot]]);
+    }
+
+    return result;
+}
+
+function updateTracker(tracker, a) {
+    const G = CONFIG.gestures;
+    const fresh = !tracker.present;
+
+    tracker.present = true;
+    tracker.missing = 0;
+    tracker.palmWidth = a.palmWidth;
+    tracker.extended = a.extended;
+    tracker.pinch = a.pinch;
+    tracker.reach = a.reach;
+
+    // 平滑：手在画面里的抖动会被这层 EMA 吃掉，星云不会再跟着乱晃
+    if (fresh) {
+        tracker.x = a.x;
+        tracker.y = a.y;
+    } else {
+        tracker.x += (a.x - tracker.x) * G.smoothing;
+        tracker.y += (a.y - tracker.y) * G.smoothing;
+    }
+
+    // 捏合用双阈值滞回：进入要更严，退出要更松
+    if (!tracker.pinching) {
+        if (a.pinch < G.pinchEnter && a.reach > G.pinchMinReach) tracker.pinching = true;
+    } else if (a.pinch > G.pinchExit) {
+        tracker.pinching = false;
+    }
+
+    const raw = tracker.pinching
+        ? 'PINCH'
+        : a.extended >= G.openMinFingers
+          ? 'OPEN'
+          : a.extended <= G.fistMaxFingers
+            ? 'FIST'
+            : 'IDLE';
+
+    commitLabel(tracker, raw);
+}
+
+/** 连续 confirmFrames 帧都是同一个手势才认，避免临界状态来回切。 */
+function commitLabel(tracker, label) {
+    const need = CONFIG.gestures.confirmFrames;
+
+    if (label === tracker.label) {
+        tracker.candidate = label;
+        tracker.candidateCount = 0;
+        return;
+    }
+
+    if (label === tracker.candidate) tracker.candidateCount++;
+    else {
+        tracker.candidate = label;
+        tracker.candidateCount = 1;
+    }
+
+    if (tracker.candidateCount >= need) {
+        tracker.label = label;
+        tracker.candidateCount = 0;
+    }
+}
+
+function markMissing(tracker) {
+    if (!tracker.present) return;
+    if (++tracker.missing < MISS_LIMIT) return;
+
+    tracker.present = false;
+    tracker.label = 'IDLE';
+    tracker.candidate = null;
+    tracker.candidateCount = 0;
+    tracker.pinching = false;
+}
+
+/* ------------------------------------------------------------------ 决策 */
+
+/**
+ * 两只手的分工：
+ *   一手张开 → 树散成星云（并由这只手控制视角）
+ *   另一手捏合 → 抽一张照片到眼前（每捏一次换一张）
+ *   同时出现 → 张开的那只管星云，捏合的那只抽照片，互不打扰
+ */
+function decide() {
+    const live = trackers.filter((t) => t.present);
+
+    const pinchHand = live.find((t) => t.label === 'PINCH');
+    const openHands = live.filter((t) => t.label === 'OPEN');
+    const fistHand = live.find((t) => t.label === 'FIST');
+
+    STATE.hands = live.map((t) => ({ label: t.label, x: t.x, y: t.y }));
+
+    // ① 抽照片：优先级最高，任何一只手捏合都算
+    if (pinchHand) {
+        lastPinchAt = performance.now();
+        if (!grabbing) {
+            grabbing = true;
+            grabNextPhoto();
+        }
+    } else if (grabbing && performance.now() - lastPinchAt > CONFIG.gestures.pinchReleaseMs) {
+        // 松开后等一小会儿再放回去：捏合的过程中拇指本来就会轻微抖开
+        grabbing = false;
+        releasePhoto();
+    }
+
+    // ② 树的形态
+    if (openHands.length) {
+        STATE.mode = 'SCATTER';
+        STATE.hand.detected = true;
+
+        let sx = 0;
+        let sy = 0;
+        for (const h of openHands) {
+            sx += h.x;
+            sy += h.y;
+        }
+        const tx = sx / openHands.length;
+        const ty = sy / openHands.length;
+
+        // 手从「一只手」变成「两只手」时中点会跳一下，这里再滤一层
+        if (handPosInit) {
+            STATE.hand.x += (tx - STATE.hand.x) * 0.18;
+            STATE.hand.y += (ty - STATE.hand.y) * 0.18;
+        } else {
+            STATE.hand.x = tx;
+            STATE.hand.y = ty;
+            handPosInit = true;
+        }
+    } else if (fistHand) {
+        STATE.mode = 'TREE';
+        STATE.hand.detected = false;
+        handPosInit = false;
+    } else {
+        // 只捏着、或者认不出动作：形态保持不动，别乱切
+        if (!live.length) handPosInit = false;
+        STATE.hand.detected = false;
+    }
+
+    setStatus(statusText(live, pinchHand, openHands, fistHand));
+    setDebug(debugText(live));
+}
+
+function statusText(live, pinchHand, openHands, fistHand) {
+    if (!live.length) return '未检测到手 · 拖拽旋转 / 滚轮缩放';
+
+    if (pinchHand && openHands.length) return '双手 · 张开=星云，捏合=抽照片';
+    if (pinchHand) return '捏合 · 抽照片（松手放回）';
+    if (openHands.length >= 2) return '双手张开 · 星云';
+    if (openHands.length) return '张开 · 星云（左右移动手掌转视角）';
+    if (fistHand) return '握拳 · 聚成树';
+    return '看到手了 · 试试握拳 / 张开手掌 / 捏合';
+}
+
+function debugText(live) {
+    if (!live.length) return '—';
+    return live
+        .map(
+            (t, i) =>
+                `#${i} ${t.label} 手指${t.extended} 捏${t.pinch.toFixed(2)} 伸${t.reach.toFixed(2)}`
+        )
+        .join('  |  ');
 }

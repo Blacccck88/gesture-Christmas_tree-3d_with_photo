@@ -1,29 +1,36 @@
 /**
  * 界面：加载遮罩、上传按钮、首次引导、保存图片、快捷键、状态条。
  */
-import { STATE } from './config.js';
-import { handleImageUpload } from './photos.js';
+import { CONFIG, STATE } from './config.js';
+import { addFiles, photoCount } from './photos.js';
 import { saveImage } from './capture.js';
 import { isDemoMode } from './demo.js';
+import { grabNextPhoto, releasePhoto, subscribeFocus } from './focus.js';
 
 const SEEN_KEY = 'grand-luxury-tree:onboarded';
 
 let statusEl = null;
 let debugEl = null;
+let captionEl = null;
+let toastEl = null;
 let onboardingEl = null;
+let toastTimer = 0;
 
 export function initUI() {
     statusEl = document.getElementById('status-info');
     debugEl = document.getElementById('debug-info');
+    captionEl = document.getElementById('focus-caption');
+    toastEl = document.getElementById('toast');
     onboardingEl = document.getElementById('onboarding');
 
-    document.getElementById('file-input').addEventListener('change', handleImageUpload);
-    document.getElementById('folder-input').addEventListener('change', handleImageUpload);
+    document.getElementById('file-input').addEventListener('change', onFilesChosen);
+    document.getElementById('folder-input').addEventListener('change', onFilesChosen);
     document.getElementById('save-btn').addEventListener('click', onSave);
     document.getElementById('help-btn').addEventListener('click', () => toggleOnboarding(true));
     document.getElementById('onboarding-close').addEventListener('click', () => toggleOnboarding(false));
 
     window.addEventListener('keydown', onKeyDown);
+    subscribeFocus(onFocusChange);
 
     if (!isDemoMode() && !hasSeenOnboarding()) toggleOnboarding(true);
 }
@@ -48,6 +55,31 @@ function toggleOnboarding(show) {
         localStorage.setItem(SEEN_KEY, '1');
     } catch {
         // 存不下就算了，下次再弹一遍也不是什么大问题
+    }
+}
+
+/* ---------- 上传照片 ---------- */
+
+async function onFilesChosen(event) {
+    const input = event.currentTarget;
+    const files = Array.from(input.files || []).filter((f) => f.type.startsWith('image/'));
+
+    // 必须在任何早退之前清空：否则用户选了一个筛完为空的文件夹（比如里面都是
+    // 浏览器报不出 MIME 的 .heic），再选同一个文件夹时 change 事件根本不会触发，
+    // 按钮看起来就像坏了。
+    input.value = '';
+
+    if (!files.length) return;
+
+    const room = CONFIG.photos.maxCount - photoCount();
+    toast(`正在读取 ${Math.min(files.length, Math.max(room, 0))} 张照片…`, 2000);
+
+    const { added, skipped } = await addFiles(files);
+
+    if (added) {
+        toast(`已挂上 ${added} 张照片${skipped ? ` · ${skipped} 张读不了` : ''} · 按 N 抽一张`);
+    } else {
+        toast('这些文件都读不了 · 试试 JPG / PNG');
     }
 }
 
@@ -100,25 +132,63 @@ function onKeyDown(e) {
             break;
         case 't':
             STATE.mode = 'TREE';
-            STATE.focusTarget = null;
+            releasePhoto();
             break;
         case 's':
             STATE.mode = 'SCATTER';
-            STATE.focusTarget = null;
+            releasePhoto();
+            break;
+        case 'n':
+        case ' ':
+            // 没有摄像头也能换照片：把「抽一张」搬到键盘上
+            e.preventDefault();
+            grabNextPhoto();
             break;
     }
 }
 
+/* ---------- 照片计数 ---------- */
+
+function onFocusChange(info) {
+    document.body.classList.toggle('photo-focus', info.active);
+    if (!captionEl) return;
+
+    captionEl.hidden = !info.active;
+    if (info.active) captionEl.textContent = `${info.index} / ${info.total}`;
+}
+
 /* ---------- 状态显示 ---------- */
 
-/** 面向用户的一行提示。 */
+/** 面向用户的一行提示。手势循环每帧都会调，内容没变就不碰 DOM。 */
 export function setStatus(text) {
-    if (statusEl) statusEl.textContent = text;
+    if (!statusEl || statusEl.textContent === text) return;
+    statusEl.textContent = text;
 }
 
 /** 手势原始数值，只有按过 D 才可见。 */
 export function setDebug(text) {
     if (debugEl) debugEl.textContent = text;
+}
+
+/**
+ * 一次性提示条。
+ * 不放在摄像头预览框里 —— 没有摄像头时那个框整个是隐藏的。
+ */
+export function toast(text, ms = 2800) {
+    if (!toastEl) return;
+
+    clearTimeout(toastTimer);
+    toastEl.textContent = text;
+    toastEl.hidden = false;
+    toastEl.classList.remove('toast-leaving');
+
+    toastTimer = setTimeout(() => {
+        toastEl.classList.add('toast-leaving');
+        toastTimer = setTimeout(() => {
+            toastEl.hidden = true;
+            toastEl.classList.remove('toast-leaving');
+        }, 360);
+    }, ms);
 }
 
 export function hideLoader() {

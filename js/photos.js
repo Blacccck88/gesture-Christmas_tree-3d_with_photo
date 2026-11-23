@@ -1,9 +1,9 @@
 /**
- * 照片：加载、做成金框拍立得、沿树身螺旋排布。
+ * 照片：加载、缩图、做成金框拍立得、沿树身螺旋排布。
  */
 import * as THREE from 'three';
 import { CONFIG } from './config.js';
-import { mainGroup } from './scene.js';
+import { mainGroup, renderer } from './scene.js';
 import { Particle, particleSystem } from './particle.js';
 import { createPlaceholderTexture } from './utils.js';
 
@@ -14,49 +14,65 @@ import { createPlaceholderTexture } from './utils.js';
  */
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 
-const photoMeshGroup = new THREE.Group();
-const textureLoader = new THREE.TextureLoader();
+export const photoMeshGroup = new THREE.Group();
 
-// 框体几何/材质共享，每张照片只新建一个平面
-const FRAME_GEO = new THREE.BoxGeometry(1.4, 1.4, 0.05);
+// 框体几何/材质共享，每张照片只新建一个平面。
+// 用 1×1 的基础板再按照片比例缩放，换尺寸不用重建几何。
+const FRAME_GEO = new THREE.BoxGeometry(1, 1, 0.05);
 const FRAME_MAT = new THREE.MeshStandardMaterial({
     color: CONFIG.colors.champagneGold,
     metalness: 1.0,
     roughness: 0.1,
 });
 
+/**
+ * 真正的计数。
+ *
+ * 不能用 photoMeshGroup.children.length —— 被抽到眼前的照片会临时挂到 scene 上，
+ * 那样它就不在 children 里了，上限会凭空少算一张。
+ */
+let photoTotal = 0;
 let layoutQueued = false;
+
+/** 已经挂上树的照片（上传去重的依据） */
+const seenKeys = new Set();
 
 export function initPhotos() {
     mainGroup.add(photoMeshGroup);
 }
 
 export function photoCount() {
-    return photoMeshGroup.children.length;
+    return photoTotal;
 }
+
+export function photoParticles() {
+    return particleSystem.filter((p) => p.type === 'PHOTO');
+}
+
+/* ------------------------------------------------------------------ 加载 */
 
 /**
  * 启动时加载照片。
  *
- * 旧版本会盲扫 `./images/(1..200).jpg`，失败再试 `.png` —— 每次打开页面最多
- * 400 个 404，控制台和 Network 面板直接被刷满。现在改成读一个可选的
- * manifest.json：文件不存在就静默回退到示例图。
+ * 顺序：images/manifest.json（用户自己的照片）→ 内置示例图 → 引导卡。
+ * 每一级都带超时，任何一张图卡住都不会拖住整棵树。
  */
 export async function loadInitialPhotos() {
     const local = await readManifest();
+    const sources = local.length
+        ? local.map((name) => `./images/${name}`)
+        : CONFIG.preload.fallbackImages;
 
-    if (local.length) {
-        await Promise.all(local.map((name) => loadPhoto(`./images/${name}`)));
-    } else {
-        await Promise.all(CONFIG.preload.fallbackImages.map((url) => loadPhoto(url)));
-    }
+    await Promise.all(sources.map((url) => addRemote(url)));
 
-    // 一张都没加载成功（离线、或者外链图床挂了）就用本地生成的占位图兜底
+    // 一张都没加载成功（离线、或者图床挂了）就挂上引导卡，而不是让树光秃秃的
     if (photoCount() === 0) {
-        console.info('[tree] 未加载到任何照片，已挂上占位图。把照片放进 ./images/ 并列进 manifest.json 即可替换。');
+        console.info('[tree] 未加载到任何照片，已挂上引导卡。把照片放进 ./images/ 并列进 manifest.json 即可替换。');
         for (let i = 0; i < CONFIG.photos.placeholderCount; i++) {
             addPhotoToScene(createPlaceholderTexture(i));
         }
+    } else {
+        console.info(`[tree] 已挂上 ${photoCount()} 张照片（按 N 或捏合手指可以抽一张到眼前）`);
     }
 }
 
@@ -72,55 +88,198 @@ async function readManifest() {
     }
 }
 
-/** 加载一张图；无论成功失败都 resolve，这样调用方可以等「全部尝试完毕」。 */
-function loadPhoto(url) {
-    return new Promise((resolve) => {
-        textureLoader.load(
-            url,
-            (texture) => {
-                texture.colorSpace = THREE.SRGBColorSpace;
-                addPhotoToScene(texture);
-                resolve(true);
-            },
-            undefined,
-            () => {
-                console.warn(`[tree] 照片加载失败：${url}`);
-                resolve(false);
-            }
-        );
+/** 远程图（manifest 里的本地图也算）→ 带超时的 fetch → 纹理 */
+async function addRemote(url) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), CONFIG.preload.timeout);
+
+    try {
+        const res = await fetch(url, { signal: controller.signal, mode: 'cors' });
+        if (!res.ok) return false;
+        const blob = await res.blob();
+        const texture = await createTextureFromBlob(blob);
+        return texture ? addPhotoToScene(texture) : false;
+    } catch {
+        // 拉不到就算了：一张图不该影响整棵树
+        return false;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+/**
+ * 用户选的文件批量入树。
+ *
+ * 两张变化：
+ * 1. 先缩图再上传纹理（见 createTextureFromBlob）—— 这是「空白图片」的根治；
+ * 2. 并发限制在 4 —— 一次解 60 张原图会把主线程占死几百毫秒，表现就是
+ *    「点了选择文件之后画面卡住」。
+ *
+ * @returns {Promise<{added: number, skipped: number}>}
+ */
+export async function addFiles(files) {
+    const room = CONFIG.photos.maxCount - photoCount();
+    if (room <= 0) {
+        console.warn(`[tree] 已达到 ${CONFIG.photos.maxCount} 张上限，忽略本次选择`);
+        return { added: 0, skipped: files.length };
+    }
+
+    const batch = files.slice(0, room);
+    if (files.length > room) {
+        console.warn(`[tree] 选中 ${files.length} 张，只加载前 ${room} 张（上限 ${CONFIG.photos.maxCount}）`);
+    }
+
+    let added = 0;
+    let skipped = files.length - batch.length;
+
+    await runPool(batch, 4, async (file) => {
+        const key = `${file.name}|${file.size}|${file.lastModified}`;
+        if (seenKeys.has(key)) {
+            skipped++;         // 同一个文件夹选两次不会重复挂
+            return;
+        }
+        seenKeys.add(key);
+
+        try {
+            const texture = await createTextureFromBlob(file);
+            if (texture && addPhotoToScene(texture)) added++;
+            else skipped++;
+        } catch (err) {
+            // iPhone 的 HEIC 在多数桌面浏览器里解不了，安静跳过并计数
+            console.warn(`[tree] 读不了这张图：${file.name}`, err?.message ?? err);
+            skipped++;
+        }
+    });
+
+    return { added, skipped };
+}
+
+/**
+ * Blob/File → 缩小后的纹理。
+ *
+ * 关键的一步：手机照片动辄 4000×3000，直接当纹理会吃掉 ~48MB 显存。
+ * 几十张就是几个 GB，WebGL 到上限后不会报错，只是纹理静默变成白板。
+ * 这里先按 maxTextureEdge 等比缩到小图（树上那张只有 20 来像素宽，
+ * 抽到眼前也只要 ~500px），显存和加载时间都降一个数量级。
+ *
+ * createImageBitmap 的解码在别的线程，不会卡住渲染；顺带处理了 EXIF 方向
+ * （iPhone 竖拍的照片不会横过来）。
+ */
+async function createTextureFromBlob(blob) {
+    const maxEdge = CONFIG.photos.maxTextureEdge;
+    let bitmap = null;
+
+    try {
+        // 不传 options：默认就是 imageOrientation: 'from-image'，
+        // 顺带把 iPhone 竖拍的 EXIF 方向摆正（传参数反而在老浏览器上不被识别）
+        bitmap = await createImageBitmap(blob);
+    } catch {
+        // 老 Safari 没有 createImageBitmap 的 resize / EXIF 支持，退回 <img>
+        bitmap = await loadViaImage(blob);
+    }
+
+    if (!bitmap) return null;
+
+    const srcW = bitmap.width || bitmap.naturalWidth;
+    const srcH = bitmap.height || bitmap.naturalHeight;
+    if (!srcW || !srcH) {
+        bitmap.close?.();
+        return null;
+    }
+
+    const scale = Math.min(1, maxEdge / Math.max(srcW, srcH));
+    const w = Math.max(1, Math.round(srcW * scale));
+    const h = Math.max(1, Math.round(srcH * scale));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(bitmap, 0, 0, w, h);
+    bitmap.close?.();
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    // 照片贴在斜面上时，各向异性过滤能明显减轻「糊成一片」
+    texture.anisotropy = Math.min(8, renderer?.capabilities?.getMaxAnisotropy?.() ?? 1);
+    texture.needsUpdate = true;
+    return texture;
+}
+
+function loadViaImage(blob) {
+    return new Promise((resolve, reject) => {
+        const url = URL.createObjectURL(blob);
+        const img = new Image();
+        img.onload = () => {
+            URL.revokeObjectURL(url);
+            resolve(img);
+        };
+        img.onerror = () => {
+            URL.revokeObjectURL(url);
+            reject(new Error('image decode failed'));
+        };
+        img.src = url;
     });
 }
 
+/** 简易并发池：同时最多 limit 个任务，避免一次性解几十张图。 */
+async function runPool(items, limit, worker) {
+    let cursor = 0;
+    const runners = new Array(Math.min(limit, items.length)).fill(null).map(async () => {
+        while (cursor < items.length) {
+            const index = cursor++;
+            await worker(items[index]);
+        }
+    });
+    await Promise.all(runners);
+}
+
+/* ------------------------------------------------------------------ 建场景 */
+
 export function addPhotoToScene(texture) {
-    if (photoCount() >= CONFIG.photos.maxCount) {
+    if (photoTotal >= CONFIG.photos.maxCount) {
         texture.dispose();
         return false;
     }
 
-    // 按原图比例缩放，长边固定 1.2，避免照片被拉变形
-    let width = 1.2;
-    let height = 1.2;
+    // 按原图比例缩放，长边固定成 longEdge，避免照片被拉变形
+    const long = CONFIG.photos.longEdge;
+    const border = CONFIG.photos.border;
+    let width = long;
+    let height = long;
     if (texture.image) {
         const aspect = texture.image.width / texture.image.height;
-        if (aspect > 1) height = width / aspect;
-        else width = height * aspect;
+        if (aspect > 1) height = long / aspect;
+        else width = long * aspect;
     }
 
     const frame = new THREE.Mesh(FRAME_GEO, FRAME_MAT);
-    frame.scale.set(width / 1.2, height / 1.2, 1);
+    frame.scale.set(width + border * 2, height + border * 2, 1);
 
     const photo = new THREE.Mesh(
         new THREE.PlaneGeometry(width, height),
-        new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide })
+        new THREE.MeshBasicMaterial({
+            map: texture,
+            side: THREE.DoubleSide,
+            // 照片是「照片」，不是场景里的一块反光板：
+            // 不参与色调映射，颜色才是原图的颜色（Reinhard + exposure 2.2
+            // 会把所有照片压成灰白的一片）。
+            toneMapped: false,
+        })
     );
     photo.position.z = 0.04;
 
     const group = new THREE.Group();
     group.add(frame, photo);
-    group.scale.setScalar(0.8);
+    group.scale.setScalar(1);
+    group.userData.photoIndex = photoTotal;
+    // 抽到眼前时按这个换算缩放，竖图和横图占屏一致
+    group.userData.longEdge = long;
 
     photoMeshGroup.add(group);
     particleSystem.push(new Particle(group, 'PHOTO'));
+    photoTotal++;
 
     queueLayout();
     return true;
@@ -140,60 +299,32 @@ function queueLayout() {
 }
 
 export function updatePhotoLayout() {
-    const photos = particleSystem.filter((p) => p.type === 'PHOTO');
+    const photos = photoParticles();
     if (!photos.length) return;
 
     const fullH = CONFIG.particles.treeHeight;
     const h = fullH * 0.9;
     const stepY = h / photos.length;
 
+    /**
+     * 照片一多就得整体缩小，否则相邻两张会糊成一团。
+     * 螺旋上相邻两张的竖向间距是 h/count，要让照片本身小于这个间距是做不到的
+     * （6 张时就已经放不下了），所以按 sqrt 收敛：6 张以内保持原尺寸，
+     * 30 张左右缩到一半，64 张缩到 0.42 —— 大概是原版 1.2 的观感。
+     */
+    const scaleFactor = THREE.MathUtils.clamp(Math.sqrt(8 / photos.length), 0.42, 1);
+
     photos.forEach((p, i) => {
         const y = -h / 2 + stepY * i + stepY / 2;
         const normalizedH = (y + fullH / 2) / fullH;
 
-        // 比树身半径再外扩 3，让照片浮在装饰物外面
-        const r = Math.max(CONFIG.particles.treeRadius * (1.0 - normalizedH), 1.0) + 3.0;
+        // 比树身半径再外扩一点，让照片浮在装饰物外面
+        const r = Math.max(CONFIG.particles.treeRadius * (1.0 - normalizedH), 1.0) + CONFIG.photos.radialOffset;
         const angle = normalizedH * Math.PI * 2 * CONFIG.photos.loops + i * GOLDEN_ANGLE;
 
         p.posTree.set(Math.cos(angle) * r, y, Math.sin(angle) * r);
-    });
-}
 
-export function handleImageUpload(event) {
-    const files = Array.from(event.target.files || []).filter((f) => f.type.startsWith('image/'));
-
-    // 必须在任何早退之前清空：否则用户选了一个筛完为空的文件夹（比如里面都是
-    // 浏览器报不出 MIME 的 .heic），再选同一个文件夹时 change 事件根本不会触发，
-    // 按钮看起来就像坏了。
-    event.target.value = '';
-
-    if (!files.length) return;
-
-    const room = CONFIG.photos.maxCount - photoCount();
-    if (room <= 0) {
-        console.warn(`[tree] 已达到 ${CONFIG.photos.maxCount} 张上限，忽略本次选择`);
-        return;
-    }
-    if (files.length > room) {
-        console.warn(`[tree] 选中 ${files.length} 张，只加载前 ${room} 张（上限 ${CONFIG.photos.maxCount}）`);
-    }
-
-    files.slice(0, room).forEach((file) => {
-        // 用 object URL 而不是 FileReader 的 base64：后者会把整张图以字符串
-        // 形式多留一份在内存里，选文件夹时很容易把内存吃满。
-        const url = URL.createObjectURL(file);
-        textureLoader.load(
-            url,
-            (texture) => {
-                texture.colorSpace = THREE.SRGBColorSpace;
-                addPhotoToScene(texture);
-                URL.revokeObjectURL(url);
-            },
-            undefined,
-            () => {
-                console.warn(`[tree] 无法读取 ${file.name}`);
-                URL.revokeObjectURL(url);
-            }
-        );
+        // 被抽到眼前的那张正在世界坐标里飞，别去动它
+        if (!p.focused) p.baseScale = scaleFactor;
     });
 }

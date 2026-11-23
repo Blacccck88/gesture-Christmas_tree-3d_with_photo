@@ -21,6 +21,10 @@ export let controls;
 /** 整棵树（装饰物 + 金尘 + 照片）都挂在这个 group 上，方便整体旋转。 */
 export let mainGroup;
 
+/** 抽照片到眼前时会把辉光压下去（照片被强 bloom 罩住会糊成一片白）。 */
+export let bloomPass;
+export const BLOOM_BASE = 0.5;
+
 export const clock = new THREE.Clock();
 
 export function initScene() {
@@ -104,12 +108,12 @@ function setupPostProcessing() {
     // Bloom 在所有档位都保留：这套「香槟金辉光」是项目的整个视觉基调，
     // 关掉之后画面会立刻发灰发平。它的开销主要跟分辨率走，
     // 所以低配档是靠降 pixelRatio 和粒子数来省，而不是砍掉辉光。
-    const bloomPass = new UnrealBloomPass(
+    bloomPass = new UnrealBloomPass(
         new THREE.Vector2(window.innerWidth, window.innerHeight),
         1.5, 0.4, 0.85
     );
     bloomPass.threshold = 0.65;
-    bloomPass.strength = 0.5;
+    bloomPass.strength = BLOOM_BASE;
     bloomPass.radius = 0.4;
 
     composer = new EffectComposer(renderer);

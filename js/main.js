@@ -7,10 +7,10 @@ import { createTree, createDust, updateStar } from './tree.js';
 import { createSnow, updateSnow } from './snow.js';
 import { initPhotos, loadInitialPhotos } from './photos.js';
 import { updateParticles } from './particle.js';
+import { updateFocus } from './focus.js';
 import { initGestures } from './gestures.js';
 import { initUI, hideLoader, setStatus } from './ui.js';
 import { initDemo, isDemoMode, updateDemo } from './demo.js';
-import { particleSystem } from './particle.js';
 
 function boot() {
     const tier = applyQuality();
@@ -20,7 +20,7 @@ function boot() {
     );
 
     // 要在 initUI 之前确定，否则首次引导会盖在演示画面上
-    initDemo(pickRandomPhoto);
+    initDemo();
 
     initScene();
     createTree();
@@ -41,14 +41,8 @@ function boot() {
     setStatus('正在加载手势模型…');
     initGestures().then((ok) => {
         if (ok) return;
-        console.info('[tree] 手势不可用，可用鼠标拖拽旋转、滚轮缩放，T / S 切换形态');
+        console.info('[tree] 手势不可用，可用鼠标拖拽旋转、滚轮缩放，T / S 切换形态，N 换一张照片');
     });
-}
-
-/** 随机挑一张照片作为 FOCUS 目标。 */
-function pickRandomPhoto() {
-    const photos = particleSystem.filter((p) => p.type === 'PHOTO');
-    return photos.length ? photos[Math.floor(Math.random() * photos.length)].mesh : null;
 }
 
 function animate() {
@@ -56,15 +50,15 @@ function animate() {
 
     const dt = Math.min(clock.getDelta(), 0.1); // 切回标签页时 dt 会很大，钳一下防止粒子瞬移
 
-    updateDemo(dt, pickRandomPhoto);
+    updateDemo(dt);
     updateRotation(dt);
 
-    // 必须在 updateParticles 之前刷新：FOCUS 模式要把世界坐标换算回 mainGroup
-    // 的局部坐标，而 matrixWorld 默认要等到 render() 才更新 —— 那样用的就是上一帧
-    // 的朝向，被选中的照片在树旋转时会跟着飘而不是钉在镜头前。
+    // 必须在 updateParticles 之前刷新：照片飞回树上时要读 mainGroup.matrixWorld
+    // 把树上的落点换算成世界坐标，而 matrixWorld 默认要等到 render() 才更新。
     mainGroup.updateMatrixWorld(true);
 
-    updateParticles(dt, STATE.mode, STATE.focusTarget);
+    updateParticles(dt, STATE.mode);
+    updateFocus(dt);
     updateSnow(dt);
     updateStar();
 

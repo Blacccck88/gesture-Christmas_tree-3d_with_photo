@@ -47,9 +47,14 @@ Allow camera access, then:
 | --- | --- |
 | **Closed fist ✊** | Particles gather back into the tree |
 | **Open palm 🖐️** | Explode into a nebula; move your hand to swing the view |
-| **Pinch 🤏** | Pull a random photo up close |
+| **Pinch 🤏** | Pull a photo up close — **a different one every pinch** (no repeats until the deck runs out) |
+| **Both hands 🙌** | Hold one palm open for the nebula while the other hand pinches to pull photos — the two never fight each other |
 
-Detection works on **relative ratios** (normalised by the wrist-to-knuckle distance), so it stays stable whether your hand is near or far. Thresholds live in `gestures` inside `js/config.js`; press <kbd>D</kbd> to watch the raw numbers live.
+Detection is normalised by **palm width** (index knuckle ↔ pinky knuckle) rather than wrist-to-knuckle length, because the latter stretches whenever a finger curls — the same pinch would score completely differently depending on how open your hand was. Pinching also uses **dual thresholds with hysteresis** plus a three-frame confirmation, so it doesn't flicker around the boundary.
+
+Thresholds live in `gestures` inside `js/config.js`; press <kbd>D</kbd> to watch both hands' numbers live (`extended fingers / pinch ratio / index reach`) and tune against them.
+
+> Up to two hands are tracked at once. Inference is capped at 30fps so gesture work never starves the render loop.
 
 ### 🖱️ Mouse & keyboard
 
@@ -57,6 +62,7 @@ Detection works on **relative ratios** (normalised by the wrist-to-knuckle dista
 | --- | --- |
 | Left-drag | Orbit the camera |
 | Scroll | Zoom |
+| <kbd>N</kbd> / <kbd>Space</kbd> | Pull the next photo (works without a camera) |
 | <kbd>H</kbd> | Hide all UI (great for screenshots and wallpaper recordings) |
 | <kbd>T</kbd> / <kbd>S</kbd> | Switch between tree and scattered form |
 | <kbd>D</kbd> | Show gesture-detection debug values |
@@ -71,6 +77,8 @@ Two ways:
 **1. Upload in the page (easiest)**
 Click `Select Files` for individual images, or `Select Folder` to load a whole directory at once.
 
+Every photo is downscaled to a 512px long edge before it reaches the GPU. A 4000×3000 phone shot would otherwise eat ~48MB of VRAM; a few dozen of those hit the WebGL limit, which doesn't throw — the textures just silently turn white, which looks exactly like "the image is broken". After downscaling, 64 photos total about 90MB.
+
 **2. Drop them in `images/`**
 Put your photos in `images/`, then list the filenames in `images/manifest.json`:
 
@@ -78,9 +86,11 @@ Put your photos in `images/`, then list the filenames in `images/manifest.json`:
 ["photo-01.jpg", "photo-02.jpg", "photo-03.png"]
 ```
 
-Copy `images/manifest.example.json` as a starting point. If the file doesn't exist the app quietly falls back to sample images.
+Copy `images/manifest.example.json` as a starting point. If the file doesn't exist the app quietly falls back to the bundled samples in `assets/photos/`.
 
 > `images/` is gitignored, so your personal photos won't be committed by accident.
+>
+> With no photos at all, the tree hangs a few cream-coloured "YOUR PHOTO" cards — clearly a placeholder, not a broken image.
 
 ## 🚀 Run locally
 
@@ -101,13 +111,17 @@ With VS Code, the `Live Server` extension works too: right-click `index.html` �
 
 | Parameter | Effect |
 | --- | --- |
-| `?demo=1` | Demo mode: cycles through tree → scatter → photo focus automatically with the UI hidden. Handy for screen recording or big-screen displays. |
+| `?demo=1` | Demo mode: cycles through tree → scatter → photo pull automatically with the UI hidden. Handy for screen recording or big-screen displays. |
 | `?quality=high\|medium\|low` | Force a quality tier (auto-detected by default). |
+| `?wasm=...` | Base URL of your own MediaPipe wasm mirror (the fastest of a few mirrors is picked automatically by default). |
+| `?model=...` | URL of your own `hand_landmarker.task` (the official CDN is used by default). |
 
 ## ⚡ Performance
 
 * **Ornaments and dust are drawn with `InstancedMesh`** — 3500 particles cost only a handful of draw calls, so mid-range devices stay smooth.
 * **Automatic quality tiers** — touch devices and low core counts get fewer particles and a lower `pixelRatio`. Bloom stays on at every tier, because it *is* the look.
+* **Photos are downscaled before upload** — an order of magnitude less VRAM, and folder selection no longer blocks the main thread (decoding happens off-thread, four at a time).
+* **Hand inference is capped at 30fps** on its own schedule, outside the render loop.
 * Vectors and matrices are reused throughout; the hot path allocates nothing per frame.
 
 ## 🛠️ Built with
@@ -128,14 +142,16 @@ js/
   config.js         every tunable (colours, particle counts, gesture thresholds, quality tiers)
   scene.js          renderer / camera / lights / post-processing / orbit controls
   tree.js           ornaments (InstancedMesh), the star, gold dust
-  particle.js       how a single particle moves between the three forms
-  photos.js         photo loading, gold frames, spiral layout
+  particle.js       how a single particle moves between the tree and the nebula
+  photos.js         photo loading, downscaling, gold frames, spiral layout
+  focus.js          the "pull a photo up close" animation and deck logic
   snow.js           falling snow
-  gestures.js       MediaPipe hand tracking
+  gestures.js       MediaPipe hand tracking (two hands)
   capture.js        titled image export
   demo.js           ?demo=1 auto-cycling showcase
   ui.js             buttons, intro overlay, shortcuts, status line
-  utils.js          damping helper and procedurally generated textures
+  utils.js          damping / easing helpers and procedural textures
+assets/photos/      bundled sample photos
 images/             drop your own photos here
 ```
 

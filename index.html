@@ -61,11 +61,17 @@
                 <button class="upload-btn" id="help-btn" type="button">Controls</button>
             </div>
             <p class="hint-text">
-                拖拽旋转 · 滚轮缩放<br>
+                拖拽旋转 · 滚轮缩放 · N 换一张照片<br>
                 H 隐藏界面 · T 聚成树 · S 散开 · D 调试
             </p>
         </div>
+
+        <!-- 抽到眼前的照片编号，让「每张都不一样」这件事看得见 -->
+        <div id="focus-caption" hidden></div>
     </div>
+
+    <!-- 独立于摄像头预览的提示条：没有摄像头时也能看到上传结果 -->
+    <div id="toast" hidden></div>
 
     <!-- 首次进入的引导：不讲清楚要做什么手势，用户开了摄像头也只会发愣 -->
     <div id="onboarding" hidden>
@@ -85,11 +91,16 @@
                 <li>
                     <span class="gesture-emoji">🤏</span>
                     <strong>捏合手指</strong>
-                    <span>随机抓一张照片放大到眼前</span>
+                    <span>抽一张照片到眼前，每捏一次换一张</span>
+                </li>
+                <li>
+                    <span class="gesture-emoji">🙌</span>
+                    <strong>双手一起用</strong>
+                    <span>一只手张开保持星云，另一只手捏合抽照片</span>
                 </li>
             </ul>
             <p class="onboarding-note">
-                没有摄像头也能玩：拖拽旋转、滚轮缩放，<kbd>T</kbd> / <kbd>S</kbd> 切换形态。
+                没有摄像头也能玩：拖拽旋转、滚轮缩放，<kbd>T</kbd> / <kbd>S</kbd> 切换形态，<kbd>N</kbd> 换照片。
             </p>
             <button class="upload-btn onboarding-start" id="onboarding-close" type="button">开始</button>
         </div>

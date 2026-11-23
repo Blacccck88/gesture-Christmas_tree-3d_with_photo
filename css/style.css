@@ -81,6 +81,94 @@ h1 {
     font-family: 'Cinzel', 'Times New Roman', serif;
     opacity: 0.9;
     text-align: center;
+    transition: opacity 0.6s ease;
+}
+
+/* 有照片被抽到眼前时把标题压淡，免得压在照片上 */
+.photo-focus h1 {
+    opacity: 0.14;
+}
+
+/* ============ 照片编号 ============ */
+/*
+ * 抽照片这个动作以前没有任何反馈：捏一下，出来一张图，然后就没了。
+ * 给个「3 / 18」的角标，用户才有「我抽到了第几张、还剩多少」的手感。
+ */
+#focus-caption {
+    position: absolute;
+    left: 50%;
+    bottom: 42px;
+    transform: translateX(-50%);
+    padding: 7px 16px;
+    border: 1px solid rgba(212, 175, 55, 0.35);
+    border-radius: 999px;
+    background: rgba(5, 13, 26, 0.55);
+    backdrop-filter: blur(6px);
+    color: rgba(252, 238, 167, 0.9);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    letter-spacing: 3px;
+    pointer-events: none;
+    animation: caption-in 0.45s ease both;
+}
+
+#focus-caption[hidden] {
+    display: none;
+}
+
+@keyframes caption-in {
+    from { opacity: 0; transform: translate(-50%, 8px); }
+    to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+/* ============ 提示条 ============ */
+/*
+ * 原来的状态文字挂在摄像头预览框里，没开摄像头（或者摄像头被拒）时整个框
+ * display:none，于是「已挂上 12 张照片」这类反馈全都看不见，选完文件像没反应。
+ */
+#toast {
+    position: absolute;
+    left: 50%;
+    bottom: 96px;
+    transform: translateX(-50%);
+    z-index: 60;
+    padding: 9px 20px;
+    border: 1px solid rgba(212, 175, 55, 0.45);
+    border-radius: 4px;
+    background: rgba(5, 13, 26, 0.82);
+    backdrop-filter: blur(8px);
+    color: #fceea7;
+    font-size: 12px;
+    letter-spacing: 1px;
+    white-space: nowrap;
+    pointer-events: none;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+    animation: toast-in 0.3s ease both;
+}
+
+#toast[hidden] {
+    display: none;
+}
+
+.toast-leaving {
+    animation: toast-out 0.35s ease both;
+}
+
+@keyframes toast-in {
+    from { opacity: 0; transform: translate(-50%, 10px); }
+    to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+@keyframes toast-out {
+    from { opacity: 1; transform: translate(-50%, 0); }
+    to { opacity: 0; transform: translate(-50%, -6px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    #toast,
+    .toast-leaving {
+        animation: none;
+    }
 }
 
 /* ============ 控制按钮 ============ */
@@ -274,6 +362,8 @@ input[type='file'] {
 .onboarding-card {
     max-width: 440px;
     width: 100%;
+    max-height: calc(100vh - 48px);
+    overflow-y: auto;
     padding: 32px;
     box-sizing: border-box;
     border: 1px solid rgba(212, 175, 55, 0.35);
