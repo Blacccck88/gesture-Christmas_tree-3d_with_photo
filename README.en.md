@@ -4,9 +4,9 @@
 
 **Wave your hand and watch a Christmas tree made of thousands of particles burst into a nebula.**
 
-[**▶ Live Demo**](https://timo8848.github.io/gesture-Christmas_tree-3d_with_photo/) · [中文](README.md)
+[**▶ Live Demo**](https://blacccck88.github.io/gesture-Christmas_tree-3d_with_photo/) · [中文](README.md)
 
-[![Live Demo](https://img.shields.io/badge/demo-live-d4af37?style=flat-square)](https://timo8848.github.io/gesture-Christmas_tree-3d_with_photo/)
+[![Live Demo](https://img.shields.io/badge/demo-live-d4af37?style=flat-square)](https://blacccck88.github.io/gesture-Christmas_tree-3d_with_photo/)
 [![Three.js](https://img.shields.io/badge/three.js-r160-000000?style=flat-square&logo=three.js&logoColor=white)](https://threejs.org/)
 [![MediaPipe](https://img.shields.io/badge/MediaPipe-hand%20tracking-00897b?style=flat-square)](https://developers.google.com/mediapipe)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
@@ -29,7 +29,7 @@ Not a static web greeting card, but a living tree made of **thousands of particl
 
 * **Particles** — 1500 ornaments, 2000 motes of gold dust, 1000 snowflakes. The tree breathes, spins, and can explode into a starfield.
 * **Touchless control** — no mouse needed, just wave at your webcam (Doctor Strange vibes).
-* **Hang your memories** — upload photos and they become gold-framed polaroids spiralling around the tree.
+* **Hang your memories** — upload photos and they become gold-haloed polaroids that keep gently drifting in the air (each on its own rhythm); pinch to pull one up close while the rest keep floating, still visible.
 * **One-click export** — hit `Save Image` for a titled, high-resolution PNG that's ready to share.
 * **Restrained palette** — midnight blue and champagne gold, nothing else.
 
@@ -102,7 +102,7 @@ Copy `images/manifest.example.json` as a starting point. If the file doesn't exi
 ⚠️ **Don't open `index.html` by double-clicking it.** The project uses ES Modules, and webcam access requires a secure context — both break under `file://`. Serve it over HTTP:
 
 ```bash
-git clone https://github.com/Timo8848/gesture-Christmas_tree-3d_with_photo.git
+git clone https://github.com/Blacccck88/gesture-Christmas_tree-3d_with_photo.git
 cd gesture-Christmas_tree-3d_with_photo
 
 python3 -m http.server 8000   # or: npx http-server .

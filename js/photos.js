@@ -3,9 +3,9 @@
  */
 import * as THREE from 'three';
 import { CONFIG } from './config.js';
-import { mainGroup, renderer } from './scene.js';
+import { mainGroup, renderer, clock } from './scene.js';
 import { Particle, particleSystem } from './particle.js';
-import { createPlaceholderTexture } from './utils.js';
+import { createPlaceholderTexture, createGlowTexture } from './utils.js';
 
 /**
  * 黄金角。照片沿螺旋排布时只按高度算角度会退化：
@@ -27,6 +27,13 @@ const FRAME_MAT = new THREE.MeshBasicMaterial({
     color: 0xb8933e,
     toneMapped: false,
 });
+
+/** 照片背后的金色光晕贴图，全局只生成一次，所有照片共享 */
+let glowTexture = null;
+function getGlowTexture() {
+    if (!glowTexture) glowTexture = createGlowTexture();
+    return glowTexture;
+}
 
 /**
  * 真正的计数。
@@ -278,16 +285,37 @@ export function addPhotoToScene(texture, source = 'user') {
     );
     photo.position.z = 0.04;
 
+    // 照片背后的金色柔光晕：让照片在午夜蓝背景里像「发光的回忆」，
+    // 也顺带解决照片偏小、容易被深色背景吃掉可见度的问题
+    const halo = new THREE.Mesh(
+        new THREE.PlaneGeometry(width * 2.0, height * 2.0),
+        new THREE.MeshBasicMaterial({
+            map: getGlowTexture(),
+            transparent: true,
+            opacity: CONFIG.photos.haloOpacity,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            side: THREE.DoubleSide,
+        })
+    );
+    halo.position.z = -0.1;
+
     const group = new THREE.Group();
-    group.add(frame, photo);
+    group.add(halo, frame, photo);
     group.scale.setScalar(1);
     group.userData.photoIndex = photoTotal;
     group.userData.source = source;
+    group.userData.halo = halo;
     // 抽到眼前时按这个换算缩放，竖图和横图占屏一致
     group.userData.longEdge = long;
 
     photoMeshGroup.add(group);
-    particleSystem.push(new Particle(group, 'PHOTO'));
+    const particle = new Particle(group, 'PHOTO');
+    // 上树时带一次弹入动画，并错开 0~0.5s、时长也略有差别，
+    // 多张照片一起进来时是「此起彼伏」地蹦进画面，而不是整齐划一地同时出现
+    particle.enterStart = clock.elapsedTime + Math.random() * 0.5;
+    particle.enterDur = CONFIG.photos.enterDuration * (0.8 + Math.random() * 0.4);
+    particleSystem.push(particle);
     photoTotal++;
 
     queueLayout();
@@ -307,8 +335,13 @@ export function removeWhere(pred) {
         if (p.type !== 'PHOTO' || p.focused || !pred(p)) continue;
 
         p.mesh.removeFromParent();
-        // 相框几何体是共享的，只销毁这张照片自己的
-        const plane = p.mesh.children[1];
+        // 相框几何体/材质全局共享，不能 dispose；只销毁照片平面和它自己的光晕
+        const halo = p.mesh.userData.halo;
+        if (halo) {
+            halo.geometry.dispose();
+            halo.material.dispose();   // map 是共享的 glowTexture，不能 dispose
+        }
+        const plane = p.mesh.children[2];   // [0]=halo, [1]=frame(共享), [2]=photo
         if (plane) {
             plane.geometry.dispose();
             plane.material.map?.dispose();

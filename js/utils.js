@@ -144,3 +144,27 @@ export function createPlaceholderTexture(index) {
     texture.colorSpace = THREE.SRGBColorSpace;
     return texture;
 }
+
+/**
+ * 照片背后的金色柔光晕贴图（径向渐变，配 AdditiveBlending 用）。
+ * 让照片在午夜蓝背景里像「发光的回忆」，而不是一块平板的卡片。
+ * 中心暖白、向外过渡到香槟金再消失，和整棵树的香槟金辉光一脉相承。
+ */
+export function createGlowTexture() {
+    const size = 256;
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = size;
+    const ctx = canvas.getContext('2d');
+
+    const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+    g.addColorStop(0, 'rgba(255, 238, 205, 0.9)');
+    g.addColorStop(0.35, 'rgba(255, 205, 130, 0.35)');
+    g.addColorStop(0.7, 'rgba(255, 178, 92, 0.08)');
+    g.addColorStop(1, 'rgba(255, 170, 80, 0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, size, size);
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    return texture;
+}

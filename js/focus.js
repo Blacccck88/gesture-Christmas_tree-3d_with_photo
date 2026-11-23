@@ -206,6 +206,10 @@ function updateIn(entry, dt) {
         const s = THREE.MathUtils.lerp(entry.fromScale.x, _targetScale.x, easeOutBack(raw, 0.45));
         entry.group.scale.setScalar(s);
 
+        // 抽到眼前要看得清：背后的光晕随飞入淡出；飞回时在 updateOut 里渐显
+        const halo = entry.group.userData.halo;
+        if (halo) halo.material.opacity = CONFIG.photos.haloOpacity * (1 - raw);
+
         if (raw >= 1) {
             entry.phase = 'held';
             entry.t = 1;
@@ -240,6 +244,10 @@ function updateOut(entry, dt) {
 
     const s = THREE.MathUtils.lerp(entry.fromScale.x, entry.particle.baseScale, p);
     entry.group.scale.setScalar(s);
+
+    // 飞回树上的过程里光晕渐显，落地后由 particle.js 接管呼吸
+    const halo = entry.group.userData.halo;
+    if (halo) halo.material.opacity = CONFIG.photos.haloOpacity * p;
 
     if (entry.t < 1) return false;
 

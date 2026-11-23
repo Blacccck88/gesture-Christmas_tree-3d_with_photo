@@ -7,7 +7,7 @@
 import * as THREE from 'three';
 import { CONFIG } from './config.js';
 import { clock, camera, mainGroup } from './scene.js';
-import { damp } from './utils.js';
+import { damp, clamp01, easeOutBack } from './utils.js';
 
 /**
  * 复用的临时对象。
@@ -15,6 +15,7 @@ import { damp } from './utils.js';
  * 就是每秒二十多万个一次性对象，GC 压力全浪费在这上面了。
  */
 const _tmpScale = new THREE.Vector3();
+const _tmpPos = new THREE.Vector3();
 
 // 照片朝向计算用的临时对象，同样模块级复用
 const _camLocal = new THREE.Vector3();
@@ -78,6 +79,13 @@ export class Particle {
         this.posScatter = new THREE.Vector3();
         this.baseScale = mesh.scale.x;
 
+        /** 持续飘动的随机相位：每张照片起伏节奏不同，避免整齐划一 */
+        this.bobPhase = Math.random() * Math.PI * 2;
+
+        /** 上树时的弹入动画；-1 表示已完成（非照片或已入场完毕） */
+        this.enterStart = -1;
+        this.enterDur = 0;
+
         const speedMult = type === 'PHOTO' ? 0.3 : 2.0;
         this.spinSpeed = new THREE.Vector3(
             (Math.random() - 0.5) * speedMult,
@@ -124,7 +132,22 @@ export class Particle {
         if (this.focused) return;
 
         const target = mode === 'SCATTER' ? this.posScatter : this.posTree;
-        this.mesh.position.lerp(target, damp(2.0, dt));
+
+        if (this.type === 'PHOTO') {
+            // 照片位置 = 目标 + 持续飘动偏移（呼吸感）。
+            // 用 sin/cos 的绝对偏移而不是逐帧累加，永远漂不走；TREE / SCATTER
+            // 都动，散开时幅度更大，更有「飘在空中」的感觉。即使有一张被抽到
+            // 眼前，其余照片依旧在飘、依旧可见。
+            const t = clock.elapsedTime;
+            const amp = CONFIG.photos.bobAmplitude * (mode === 'SCATTER' ? CONFIG.photos.bobScatterBoost : 1);
+            _tmpPos.copy(target);
+            _tmpPos.y += Math.sin(t * 0.85 + this.bobPhase) * amp;
+            _tmpPos.x += Math.cos(t * 0.6 + this.bobPhase * 1.35) * amp * 0.7;
+            _tmpPos.z += Math.sin(t * 0.5 + this.bobPhase * 0.7) * amp * 0.5;
+            this.mesh.position.lerp(_tmpPos, damp(2.0, dt));
+        } else {
+            this.mesh.position.lerp(target, damp(2.0, dt));
+        }
 
         if (mode === 'SCATTER' && this.type !== 'PHOTO') {
             // 装饰物 / 金尘自由翻滚；照片不参与，见下一分支
@@ -142,7 +165,23 @@ export class Particle {
             this.mesh.rotation.y += 0.5 * dt;
         }
 
-        this.mesh.scale.lerp(_tmpScale.setScalar(this.targetScale(mode)), damp(4, dt));
+        // 缩放：基础目标 + 照片入场弹入 + 背后光晕呼吸
+        let scale = this.targetScale(mode);
+        if (this.type === 'PHOTO') {
+            const t = clock.elapsedTime;
+
+            if (this.enterStart >= 0) {
+                const p = clamp01((t - this.enterStart) / (this.enterDur || 1));
+                if (p >= 1) this.enterStart = -1;
+                else scale *= easeOutBack(p, 0.6);   // 从 0 略带回弹地弹到 1
+            }
+
+            const halo = this.mesh.userData.halo;
+            if (halo) {
+                halo.material.opacity = CONFIG.photos.haloOpacity + Math.sin(t * 1.6 + this.bobPhase) * 0.12;
+            }
+        }
+        this.mesh.scale.lerp(_tmpScale.setScalar(scale), damp(4, dt));
 
         if (this.instanced) {
             this.mesh.updateMatrix();

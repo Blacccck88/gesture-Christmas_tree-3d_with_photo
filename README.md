@@ -4,9 +4,9 @@
 
 **挥挥手，让一棵由几千个粒子组成的圣诞树炸裂成星云。**
 
-[**▶ 在线体验**](https://timo8848.github.io/gesture-Christmas_tree-3d_with_photo/) · [English](README.en.md)
+[**▶ 在线体验**](https://blacccck88.github.io/gesture-Christmas_tree-3d_with_photo/) · [English](README.en.md)
 
-[![Live Demo](https://img.shields.io/badge/demo-live-d4af37?style=flat-square)](https://timo8848.github.io/gesture-Christmas_tree-3d_with_photo/)
+[![Live Demo](https://img.shields.io/badge/demo-live-d4af37?style=flat-square)](https://blacccck88.github.io/gesture-Christmas_tree-3d_with_photo/)
 [![Three.js](https://img.shields.io/badge/three.js-r160-000000?style=flat-square&logo=three.js&logoColor=white)](https://threejs.org/)
 [![MediaPipe](https://img.shields.io/badge/MediaPipe-hand%20tracking-00897b?style=flat-square)](https://developers.google.com/mediapipe)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
@@ -29,7 +29,7 @@
 
 * **粒子特效**：1500 个装饰物 + 2000 粒金尘 + 1000 片雪花，树会呼吸、旋转，还能炸裂成满天星。
 * **隔空控物**：不需要鼠标，对着摄像头挥挥手就能控制它（感觉像奇异博士）。
-* **挂载回忆**：上传照片，它们会变成带金框的拍立得，沿着树身螺旋飘着；捏一下手指就能把其中一张抽到眼前。
+* **挂载回忆**：上传照片，它们会变成带**金色光晕**的拍立得，在空中**持续轻轻飘动**（每张节奏都不同）；捏一下手指就能把其中一张抽到眼前放大，其余照片照常在空中飘着、保持可见。
 * **一键出图**：点 `Save Image` 直接导出一张带标题的高清图，发朋友圈刚好。
 * **极简审美**：午夜蓝 + 香槟金，主打一个「高级感」。
 
@@ -100,7 +100,7 @@
 ⚠️ **别直接双击 `index.html`**。项目用了 ES Modules，而且摄像头只在安全上下文里可用，`file://` 协议下两样都会挂。必须起一个本地服务器：
 
 ```bash
-git clone https://github.com/Timo8848/gesture-Christmas_tree-3d_with_photo.git
+git clone https://github.com/Blacccck88/gesture-Christmas_tree-3d_with_photo.git
 cd gesture-Christmas_tree-3d_with_photo
 
 python3 -m http.server 8000   # 或者：npx http-server .
