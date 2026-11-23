@@ -77,6 +77,8 @@ Two ways:
 **1. Upload in the page (easiest)**
 Click `Select Files` for individual images, or `Select Folder` to load a whole directory at once.
 
+> As soon as you upload your own photos, the bundled samples and the "YOUR PHOTO" placeholders are removed automatically — the tree keeps only what you picked.
+
 Every photo is downscaled to a 512px long edge before it reaches the GPU. A 4000×3000 phone shot would otherwise eat ~48MB of VRAM; a few dozen of those hit the WebGL limit, which doesn't throw — the textures just silently turn white, which looks exactly like "the image is broken". After downscaling, 64 photos total about 90MB.
 
 **2. Drop them in `images/`**
