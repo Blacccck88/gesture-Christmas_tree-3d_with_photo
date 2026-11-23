@@ -126,11 +126,14 @@ export class Particle {
         const target = mode === 'SCATTER' ? this.posScatter : this.posTree;
         this.mesh.position.lerp(target, damp(2.0, dt));
 
-        if (mode === 'SCATTER') {
+        if (mode === 'SCATTER' && this.type !== 'PHOTO') {
+            // 装饰物 / 金尘自由翻滚；照片不参与，见下一分支
             this.mesh.rotation.x += this.spinSpeed.x * dt;
             this.mesh.rotation.y += this.spinSpeed.y * dt;
             this.mesh.rotation.z += this.spinSpeed.z * dt;
         } else if (this.type === 'PHOTO') {
+            // 两种形态都正对镜头：树自转时照片绕着树走，但永远不把
+            // 背面 / 侧边亮给观众。
             photoLocalQuaternion(this.mesh.position, this.mesh.quaternion);
         } else {
             const k = damp(1.0, dt);
