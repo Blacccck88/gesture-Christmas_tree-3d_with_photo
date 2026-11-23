@@ -71,8 +71,8 @@ function updateRotation(dt) {
     if (STATE.mode === 'SCATTER' && STATE.hand.detected) {
         const targetY = STATE.hand.x * Math.PI * 0.9;
         const targetX = STATE.hand.y * Math.PI * 0.25;
-        STATE.rotation.y += (targetY - STATE.rotation.y) * 3.0 * dt;
-        STATE.rotation.x += (targetX - STATE.rotation.x) * 3.0 * dt;
+        STATE.rotation.y += (targetY - STATE.rotation.y) * 4.5 * dt;
+        STATE.rotation.x += (targetX - STATE.rotation.x) * 4.5 * dt;
     } else if (!STATE.userControllingCamera) {
         const spin = STATE.mode === 'TREE' ? 0.3 : 0.1;
         STATE.rotation.y += spin * dt;

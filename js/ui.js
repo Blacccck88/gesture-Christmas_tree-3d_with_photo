@@ -2,10 +2,10 @@
  * 界面：加载遮罩、上传按钮、首次引导、保存图片、快捷键、状态条。
  */
 import { CONFIG, STATE } from './config.js';
-import { addFiles, photoCount } from './photos.js';
+import { addFiles, photoCount, removeWhere } from './photos.js';
 import { saveImage } from './capture.js';
 import { isDemoMode } from './demo.js';
-import { grabNextPhoto, releasePhoto, subscribeFocus } from './focus.js';
+import { grabNextPhoto, releasePhoto, releaseAllImmediately, subscribeFocus } from './focus.js';
 
 const SEEN_KEY = 'grand-luxury-tree:onboarded';
 
@@ -77,7 +77,17 @@ async function onFilesChosen(event) {
     const { added, skipped } = await addFiles(files);
 
     if (added) {
-        toast(`已挂上 ${added} 张照片${skipped ? ` · ${skipped} 张读不了` : ''} · 按 N 抽一张`);
+        // 用户开始传自己的照片后，内置示例图和引导卡就没用了，清掉，
+        // 树上只留用户自己的照片。
+        releaseAllImmediately();
+        const cleaned = removeWhere((p) => {
+            const source = p.mesh.userData.source;
+            return source === 'fallback' || source === 'placeholder';
+        });
+
+        toast(
+            `已挂上 ${added} 张照片${cleaned ? '，示例图已撤下' : ''}${skipped ? ` · ${skipped} 张读不了` : ''} · 按 N 抽一张`
+        );
     } else {
         toast('这些文件都读不了 · 试试 JPG / PNG');
     }

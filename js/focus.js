@@ -15,6 +15,7 @@ import * as THREE from 'three';
 import { CONFIG } from './config.js';
 import { camera, scene, mainGroup, bloomPass, BLOOM_BASE } from './scene.js';
 import { photoMeshGroup, photoParticles, photoCount } from './photos.js';
+import { photoLocalQuaternion } from './particle.js';
 import { damp, clamp01, easeOutCubic, easeInOutCubic, easeOutBack } from './utils.js';
 
 /** 正在飞入 / 停留 / 飞回的照片，通常只有一两条 */
@@ -33,7 +34,7 @@ const _targetScale = new THREE.Vector3();
 const _dir = new THREE.Vector3();
 const _slotPos = new THREE.Vector3();
 const _slotQuat = new THREE.Quaternion();
-const _probe = new THREE.Object3D();
+const _slotLocalQuat = new THREE.Quaternion();
 const _pos = new THREE.Vector3();
 const _quat = new THREE.Quaternion();
 const _scale = new THREE.Vector3();
@@ -94,6 +95,21 @@ export function grabNextPhoto() {
 /** 把眼前的照片送回树上。 */
 export function releasePhoto() {
     for (const e of active) if (e.phase !== 'out') startOut(e, CONFIG.focus.outDuration);
+    notify();
+}
+
+/**
+ * 立刻把所有在途的照片拍回树上，不做动画。
+ * 「整批换照片」时用：先把它们交还，removeWhere 才不会漏掉正在飞的那张。
+ */
+export function releaseAllImmediately() {
+    for (let i = active.length - 1; i >= 0; i--) {
+        const entry = active[i];
+        photoMeshGroup.attach(entry.group);
+        entry.group.scale.setScalar(entry.particle.baseScale);
+        entry.particle.focused = false;
+        active.splice(i, 1);
+    }
     notify();
 }
 
@@ -234,20 +250,24 @@ function updateOut(entry, dt) {
     return true;
 }
 
-/** 照片在树上的朝向（和 Particle 在 TREE 模式下的做法保持一致）。 */
+/**
+ * 照片在树上的朝向（和 Particle 在 TREE 模式下共用 photoLocalQuaternion），
+ * 换算成世界坐标 —— 飞回途中的照片挂在 scene 根节点上，用的是世界四元数。
+ */
 function slotQuaternion(particle, out) {
-    _probe.position.copy(particle.posTree);
-    _probe.lookAt(0, particle.posTree.y, 0);
-    _probe.rotateY(Math.PI);
-    out.copy(mainGroup.quaternion).multiply(_probe.quaternion);
+    photoLocalQuaternion(particle.posTree, _slotLocalQuat);
+    out.copy(mainGroup.quaternion).multiply(_slotLocalQuat);
 }
 
 function notify() {
     const held = active.find((e) => e.phase !== 'out');
+    // 照片可能被撤下一批（示例图），photoIndex 是创建时的序号会过期，
+    // 角标的编号要按当前照片列表现算。
+    const list = photoParticles();
     const info = held
         ? {
               active: true,
-              index: (held.group.userData.photoIndex ?? 0) + 1,
+              index: list.findIndex((p) => p === held.particle) + 1,
               total: photoCount(),
           }
         : { active: false, index: 0, total: photoCount() };

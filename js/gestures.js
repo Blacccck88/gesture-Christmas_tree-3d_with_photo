@@ -391,11 +391,14 @@ function markMissing(tracker) {
 function decide() {
     const live = trackers.filter((t) => t.present);
 
-    const pinchHand = live.find((t) => t.label === 'PINCH');
+    // 捏合用「滞回后的原始状态」，不走 label 的多帧确认 ——
+    // 抽照片是即时动作，等 confirmFrames 帧才抓会显得「按了没反应」。
+    // label 那套防抖仍然用于 OPEN / FIST 这类模式切换，那个跳一下很显眼。
+    const pinchHand = live.find((t) => t.pinching);
     const openHands = live.filter((t) => t.label === 'OPEN');
     const fistHand = live.find((t) => t.label === 'FIST');
 
-    STATE.hands = live.map((t) => ({ label: t.label, x: t.x, y: t.y }));
+    STATE.hands = live.map((t) => ({ label: t.pinching ? 'PINCH' : t.label, x: t.x, y: t.y }));
 
     // ① 抽照片：优先级最高，任何一只手捏合都算
     if (pinchHand) {
@@ -415,24 +418,17 @@ function decide() {
         STATE.mode = 'SCATTER';
         STATE.hand.detected = true;
 
+        // tracker 里已经做过一层 EMA 了，这里直接用，别再加一层 ——
+        // 两层平滑串起来，转视角会有明显的「拖泥带水」感。
         let sx = 0;
         let sy = 0;
         for (const h of openHands) {
             sx += h.x;
             sy += h.y;
         }
-        const tx = sx / openHands.length;
-        const ty = sy / openHands.length;
-
-        // 手从「一只手」变成「两只手」时中点会跳一下，这里再滤一层
-        if (handPosInit) {
-            STATE.hand.x += (tx - STATE.hand.x) * 0.18;
-            STATE.hand.y += (ty - STATE.hand.y) * 0.18;
-        } else {
-            STATE.hand.x = tx;
-            STATE.hand.y = ty;
-            handPosInit = true;
-        }
+        STATE.hand.x = sx / openHands.length;
+        STATE.hand.y = sy / openHands.length;
+        handPosInit = true;
     } else if (fistHand) {
         STATE.mode = 'TREE';
         STATE.hand.detected = false;

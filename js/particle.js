@@ -6,7 +6,7 @@
  */
 import * as THREE from 'three';
 import { CONFIG } from './config.js';
-import { clock } from './scene.js';
+import { clock, camera, mainGroup } from './scene.js';
 import { damp } from './utils.js';
 
 /**
@@ -15,6 +15,36 @@ import { damp } from './utils.js';
  * 就是每秒二十多万个一次性对象，GC 压力全浪费在这上面了。
  */
 const _tmpScale = new THREE.Vector3();
+
+// 照片朝向计算用的临时对象，同样模块级复用
+const _camLocal = new THREE.Vector3();
+const _qOutward = new THREE.Quaternion();
+const _orientProbe = new THREE.Object3D();
+
+/**
+ * 照片挂在树上时的朝向，结果是 **mainGroup 局部坐标系**下的四元数。
+ *
+ * 原版让照片一律「背对树轴、正面朝外」（lookAt(0,y,0) + rotateY(π)）。
+ * 结果只有刚好转到镜头正前方的那一两张能被看见，其余全是侧面 ——
+ * 在深蓝背景上就是一条细金边，很容易被当成「空白图片 / 加载失败」。
+ *
+ * 这里把「朝外」和「朝相机」按 faceCamera 混合：照片基本都看得清内容，
+ * 树自转时又还保留一点角度变化，不会变成一排贴纸。
+ * focus.js 里照片飞回树上时也调用它，保证落地瞬间的朝向是一致的。
+ */
+export function photoLocalQuaternion(posLocal, out) {
+    // 相机位置换算到 mainGroup 局部坐标（调用前 mainGroup.matrixWorld 已刷新）
+    _camLocal.copy(camera.position);
+    mainGroup.worldToLocal(_camLocal);
+
+    _orientProbe.position.copy(posLocal);
+    _orientProbe.lookAt(0, posLocal.y, 0);
+    _orientProbe.rotateY(Math.PI);          // 法线翻到径向外侧
+    _qOutward.copy(_orientProbe.quaternion);
+
+    _orientProbe.lookAt(_camLocal);         // 正对相机
+    return out.slerpQuaternions(_qOutward, _orientProbe.quaternion, CONFIG.photos.faceCamera);
+}
 
 export const particleSystem = [];
 
@@ -101,9 +131,7 @@ export class Particle {
             this.mesh.rotation.y += this.spinSpeed.y * dt;
             this.mesh.rotation.z += this.spinSpeed.z * dt;
         } else if (this.type === 'PHOTO') {
-            // 照片永远朝着树干，正面朝外 —— 免得转到背面只看到一块金板
-            this.mesh.lookAt(0, this.mesh.position.y, 0);
-            this.mesh.rotateY(Math.PI);
+            photoLocalQuaternion(this.mesh.position, this.mesh.quaternion);
         } else {
             const k = damp(1.0, dt);
             this.mesh.rotation.x = THREE.MathUtils.lerp(this.mesh.rotation.x, 0, k);

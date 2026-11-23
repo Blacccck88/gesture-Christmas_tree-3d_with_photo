@@ -19,10 +19,13 @@ export const photoMeshGroup = new THREE.Group();
 // 框体几何/材质共享，每张照片只新建一个平面。
 // 用 1×1 的基础板再按照片比例缩放，换尺寸不用重建几何。
 const FRAME_GEO = new THREE.BoxGeometry(1, 1, 0.05);
-const FRAME_MAT = new THREE.MeshStandardMaterial({
-    color: CONFIG.colors.champagneGold,
-    metalness: 1.0,
-    roughness: 0.1,
+const FRAME_MAT = new THREE.MeshBasicMaterial({
+    // 纯平面金色，不参与光照。
+    // 抛光金属框在侧向聚光灯下会形成一条极亮的镜面高光，被 Bloom 一晕就是
+    // 一条「金条」糊在照片边上；BasicMaterial 根本没有高光，从根上杜绝。
+    // 亮度刻意压在 bloom 阈值（0.65）之下，免得整块框又发起光来。
+    color: 0xb8933e,
+    toneMapped: false,
 });
 
 /**
@@ -59,17 +62,16 @@ export function photoParticles() {
  */
 export async function loadInitialPhotos() {
     const local = await readManifest();
-    const sources = local.length
-        ? local.map((name) => `./images/${name}`)
-        : CONFIG.preload.fallbackImages;
+    const useFallback = !local.length;
+    const sources = useFallback ? CONFIG.preload.fallbackImages : local.map((n) => `./images/${n}`);
 
-    await Promise.all(sources.map((url) => addRemote(url)));
+    await Promise.all(sources.map((url) => addRemote(url, useFallback ? 'fallback' : 'manifest')));
 
     // 一张都没加载成功（离线、或者图床挂了）就挂上引导卡，而不是让树光秃秃的
     if (photoCount() === 0) {
         console.info('[tree] 未加载到任何照片，已挂上引导卡。把照片放进 ./images/ 并列进 manifest.json 即可替换。');
         for (let i = 0; i < CONFIG.photos.placeholderCount; i++) {
-            addPhotoToScene(createPlaceholderTexture(i));
+            addPhotoToScene(createPlaceholderTexture(i), 'placeholder');
         }
     } else {
         console.info(`[tree] 已挂上 ${photoCount()} 张照片（按 N 或捏合手指可以抽一张到眼前）`);
@@ -89,7 +91,7 @@ async function readManifest() {
 }
 
 /** 远程图（manifest 里的本地图也算）→ 带超时的 fetch → 纹理 */
-async function addRemote(url) {
+async function addRemote(url, source = 'manifest') {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), CONFIG.preload.timeout);
 
@@ -98,7 +100,7 @@ async function addRemote(url) {
         if (!res.ok) return false;
         const blob = await res.blob();
         const texture = await createTextureFromBlob(blob);
-        return texture ? addPhotoToScene(texture) : false;
+        return texture ? addPhotoToScene(texture, source) : false;
     } catch {
         // 拉不到就算了：一张图不该影响整棵树
         return false;
@@ -237,7 +239,13 @@ async function runPool(items, limit, worker) {
 
 /* ------------------------------------------------------------------ 建场景 */
 
-export function addPhotoToScene(texture) {
+/**
+ * @param {THREE.Texture} texture
+ * @param {'user'|'manifest'|'fallback'|'placeholder'} source
+ *   用户自己传的照片叫 'user'。上传之后，ui 会把 'fallback' / 'placeholder'
+ *   这些凑数的清掉，只留用户自己的。
+ */
+export function addPhotoToScene(texture, source = 'user') {
     if (photoTotal >= CONFIG.photos.maxCount) {
         texture.dispose();
         return false;
@@ -274,6 +282,7 @@ export function addPhotoToScene(texture) {
     group.add(frame, photo);
     group.scale.setScalar(1);
     group.userData.photoIndex = photoTotal;
+    group.userData.source = source;
     // 抽到眼前时按这个换算缩放，竖图和横图占屏一致
     group.userData.longEdge = long;
 
@@ -283,6 +292,35 @@ export function addPhotoToScene(texture) {
 
     queueLayout();
     return true;
+}
+
+/**
+ * 按条件摘掉照片（换一批照片时用）。
+ * 正在抽到眼前的那张不在此列 —— 交还动画还在跑，别半路拆台。
+ * @returns {number} 实际摘掉的数量
+ */
+export function removeWhere(pred) {
+    let removed = 0;
+
+    for (let i = particleSystem.length - 1; i >= 0; i--) {
+        const p = particleSystem[i];
+        if (p.type !== 'PHOTO' || p.focused || !pred(p)) continue;
+
+        p.mesh.removeFromParent();
+        // 相框几何体是共享的，只销毁这张照片自己的
+        const plane = p.mesh.children[1];
+        if (plane) {
+            plane.geometry.dispose();
+            plane.material.map?.dispose();
+            plane.material.dispose();
+        }
+        particleSystem.splice(i, 1);
+        photoTotal--;
+        removed++;
+    }
+
+    if (removed) updatePhotoLayout();
+    return removed;
 }
 
 /**
