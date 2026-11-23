@@ -26,6 +26,10 @@ export function initUI() {
     document.getElementById('file-input').addEventListener('change', onFilesChosen);
     document.getElementById('folder-input').addEventListener('change', onFilesChosen);
     document.getElementById('save-btn').addEventListener('click', onSave);
+    // 手势之外永远可用的兜底：摄像头识别不灵的时候点这里
+    document.getElementById('pull-btn').addEventListener('click', () => {
+        grabNextPhoto();
+    });
     document.getElementById('help-btn').addEventListener('click', () => toggleOnboarding(true));
     document.getElementById('onboarding-close').addEventListener('click', () => toggleOnboarding(false));
 

@@ -198,10 +198,16 @@ function predictWebcam(now) {
 
 /* ------------------------------------------------------------------ 识别 */
 
+/** 检测到手、但因为离镜头太远被过滤掉 —— 用于状态栏提示 */
+let handsTooFar = false;
+
 function processGestures(result) {
-    const detections = (result?.landmarks ?? [])
-        .map(analyze)
-        .filter((a) => a && a.palmWidth >= CONFIG.gestures.minPalmWidth);
+    const analyzed = (result?.landmarks ?? []).map(analyze).filter(Boolean);
+    const detections = analyzed.filter((a) => a.palmWidth >= CONFIG.gestures.minPalmWidth);
+
+    // 手在画面里却够不着最小掌宽：与其显示「未检测到手」让人对着摄像头
+    // 干着急，不如直接告诉他凑近一点
+    handsTooFar = analyzed.length > 0 && detections.length === 0;
 
     const pairs = assign(detections);
     const matched = new Set(pairs.map(([, t]) => t));
@@ -279,6 +285,7 @@ function createTracker() {
         candidateCount: 0,
         pinching: false,
         pinchReleaseFrames: 0,
+        pinchHist: [],
     };
 }
 
@@ -342,10 +349,19 @@ function updateTracker(tracker, a) {
         tracker.y += (a.y - tracker.y) * G.smoothing;
     }
 
-    // 捏合用双阈值滞回，释放还要连续两帧确认：
-    // 只看单帧的话，捏着保持时 pinch 值抖过 exit 一帧，照片就被误送回去了
+    // 捏合双通道判定：
+    // ① 静态 —— 捏得足够紧（pinch < enter）；
+    // ② 动态 —— 「快速捏下去」这个动作。有人捏合时指尖并不贴住，pinch 只能
+    //    降到 0.45~0.6，静态阈值永远够不着；但快速捏的动作本身特征明显
+    //    （0.2 秒内 pinch 大幅下降），据此触发就不挑手型。慢慢合拢、或者手
+    //    放松时的自然漂移达不到下降速率阈值，不会误触。
+    // 历史必须每帧无条件记录：下面判定里的 && 是短路的，pinch 高于上限的
+    // 帧一旦漏记，200ms 窗口的基准样本就会错位，dropRate 永远算不准
+    const drop = recordPinchHistory(tracker, a.pinch);
+    const dynamicPinch = a.pinch < G.pinchDynamicMax && drop > G.pinchDropRate;
+
     if (!tracker.pinching) {
-        if (a.pinch < G.pinchEnter && a.reach > G.pinchMinReach) {
+        if ((a.pinch < G.pinchEnter || dynamicPinch) && a.reach > G.pinchMinReach) {
             tracker.pinching = true;
             tracker.pinchReleaseFrames = 0;
         }
@@ -367,6 +383,29 @@ function updateTracker(tracker, a) {
             : 'IDLE';
 
     commitLabel(tracker, raw);
+}
+
+/**
+ * 每帧记录 pinch 值并返回下降速率（每秒）。基准样本取约 200ms 前，而不是
+ * 相邻帧：相邻帧差分会被关键点噪声放大（±0.1 的抖动折算成 ±3/s），拉长
+ * 窗口之后噪声平均下来不足 0.5/s，安全地落在阈值之下。
+ * 记录必须无条件执行 —— 判定处的 && 是短路的，漏记一帧基准就错位了。
+ */
+function recordPinchHistory(tracker, v) {
+    const now = performance.now();
+    const hist = tracker.pinchHist;
+    hist.push({ t: now, v });
+    while (hist.length > 2 && hist[0].t < now - 450) hist.shift();
+
+    const latest = hist[hist.length - 1];
+    let base = null;
+    for (let i = hist.length - 2; i >= 0; i--) {
+        if (latest.t - hist[i].t >= 200) { base = hist[i]; break; }
+    }
+    if (!base) return 0;
+
+    const dt = (latest.t - base.t) / 1000;
+    return dt > 0.15 ? (base.v - v) / dt : 0;
 }
 
 /** 连续 confirmFrames 帧都是同一个手势才认，避免临界状态来回切。 */
@@ -400,6 +439,7 @@ function markMissing(tracker) {
     tracker.candidate = null;
     tracker.candidateCount = 0;
     tracker.pinching = false;
+    tracker.pinchHist.length = 0;
 }
 
 /* ------------------------------------------------------------------ 决策 */
@@ -466,6 +506,7 @@ function decide() {
 }
 
 function statusText(live, pinchHand, openHands, fistHand) {
+    if (handsTooFar) return '手有点远 · 凑近摄像头一点';
     if (!live.length) return '未检测到手 · 拖拽旋转 / 滚轮缩放';
 
     if (pinchHand && openHands.length) return '双手 · 张开=星云，捏合=抽照片';

@@ -47,10 +47,12 @@ Allow camera access, then:
 | --- | --- |
 | **Closed fist ✊** | Particles gather back into the tree |
 | **Open palm 🖐️** | Explode into a nebula; move your hand to swing the view |
-| **Pinch 🤏** | Pull a photo up close — **a different one every pinch** (no repeats until the deck runs out) |
+| **Pinch 🤏** | Pull a photo up close — **a different one every pinch** (no repeats until the deck runs out). Don't worry if your fingertips don't actually touch: the *motion* of a quick pinch is enough to trigger it |
 | **Both hands 🙌** | Hold one palm open for the nebula while the other hand pinches to pull photos — the two never fight each other |
 
-Detection is normalised by **palm width** (index knuckle ↔ pinky knuckle) rather than wrist-to-knuckle length, because the latter stretches whenever a finger curls — the same pinch would score completely differently depending on how open your hand was. Pinching also uses **dual thresholds with hysteresis** plus a three-frame confirmation, so it doesn't flicker around the boundary.
+Detection is normalised by **palm width** (index knuckle ↔ pinky knuckle) rather than wrist-to-knuckle length, because the latter stretches whenever a finger curls — the same pinch would score completely differently depending on how open your hand was.
+
+Pinching is detected on **two channels**: a static threshold that fires when the pinch is firm, and a *dynamic* one that fires on the motion itself (the pinch ratio dropping sharply within ~0.2s). Plenty of people pinch without their fingertips actually touching — the motion signature catches them without false-firing on slow drifts or a relaxing hand. Everything runs behind dual-threshold hysteresis, and mode switches add frame confirmation, so nothing flickers around the boundary.
 
 Thresholds live in `gestures` inside `js/config.js`; press <kbd>D</kbd> to watch both hands' numbers live (`extended fingers / pinch ratio / index reach`) and tune against them.
 
@@ -62,6 +64,7 @@ Thresholds live in `gestures` inside `js/config.js`; press <kbd>D</kbd> to watch
 | --- | --- |
 | Left-drag | Orbit the camera |
 | Scroll | Zoom |
+| 「抽一张 🤏」 button | An always-works fallback when gesture detection misfires |
 | <kbd>N</kbd> / <kbd>Space</kbd> | Pull the next photo (works without a camera) |
 | <kbd>H</kbd> | Hide all UI (great for screenshots and wallpaper recordings) |
 | <kbd>T</kbd> / <kbd>S</kbd> | Switch between tree and scattered form |
