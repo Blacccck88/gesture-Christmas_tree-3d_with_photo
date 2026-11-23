@@ -18,8 +18,7 @@ import { CONFIG, STATE } from './config.js';
 import { grabNextPhoto, releasePhoto } from './focus.js';
 import { setStatus, setDebug, toast } from './ui.js';
 
-const MODEL_URL =
-    'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
+const MODEL_URL = './vendor/hand_landmarker.task';
 
 /**
  * 允许 ?model=... / ?wasm=... 覆盖资源地址。
@@ -41,6 +40,7 @@ function overrideParam(key) {
  * 实测快一个量级，所以开跑之前先探一下谁最快。
  */
 const WASM_MIRRORS = [
+    './vendor/mediapipe/wasm',
     'https://registry.npmmirror.com/@mediapipe/tasks-vision/0.10.3/files/wasm',
     'https://fastly.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm',
     'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm',
@@ -128,10 +128,15 @@ async function createLandmarker(vision) {
     throw new Error('no usable delegate');
 }
 
-/** 挑最快的 wasm 镜像；全都探不通就退回官方 CDN。 */
+/** 挑最快的 wasm 镜像；本地路径直接用，远程镜像才探测竞速。 */
 async function pickWasmBase() {
     const custom = overrideParam('wasm');
     const mirrors = custom ? [custom, ...WASM_MIRRORS] : WASM_MIRRORS;
+
+    // 本地 / 相对路径直接采用：探测反而会因为静态服务器忽略 Range 头
+    // 而把 8.7MB 的 wasm 整个下一遍，纯属浪费
+    const local = mirrors.find((m) => m.startsWith('.') || m.startsWith('/'));
+    if (local) return local;
 
     try {
         return await Promise.any(mirrors.map((base) => probeMirror(base)));

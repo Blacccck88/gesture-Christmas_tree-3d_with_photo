@@ -13,6 +13,17 @@ import { initUI, hideLoader, setStatus } from './ui.js';
 import { initDemo, isDemoMode, updateDemo } from './demo.js';
 
 function boot() {
+    try {
+        bootInner();
+    } catch (err) {
+        // 初始化抛错也别让用户对着黑屏干等：撤掉加载遮罩，把错误打出来
+        console.error('[tree] 启动失败：', err);
+        hideLoader();
+        setStatus('启动失败 · ' + (err?.message || err));
+    }
+}
+
+function bootInner() {
     const tier = applyQuality();
     console.info(
         `[tree] 画质档位：${tier}（装饰物 ${CONFIG.particles.count} / 金尘 ${CONFIG.particles.dustCount} / 雪花 ${CONFIG.particles.snowCount}）` +

@@ -25,9 +25,9 @@
     <script type="importmap">
     {
         "imports": {
-            "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
-            "@mediapipe/tasks-vision": "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/+esm"
+            "three": "./vendor/three/build/three.module.js",
+            "three/addons/": "./vendor/three/examples/jsm/",
+            "@mediapipe/tasks-vision": "./vendor/mediapipe/vision_bundle.mjs"
         }
     }
     </script>
@@ -113,6 +113,21 @@
         <div id="status-info">Initializing…</div>
     </div>
 
+    <script>
+        // 加载兜底：依赖全部 vendor 到本机，理应秒开；万一模块加载失败，
+        // 15 秒后强制撤掉加载遮罩，避免用户对着黑屏「LOADING MEMORIES」干等
+        (function () {
+            var deadline = Date.now() + 15000;
+            var timer = setInterval(function () {
+                var loader = document.getElementById('loader');
+                var gone = !loader || loader.style.opacity === '0';
+                if (gone || Date.now() > deadline) {
+                    clearInterval(timer);
+                    if (loader) loader.style.display = 'none';
+                }
+            }, 500);
+        })();
+    </script>
     <script type="module" src="js/main.js"></script>
 </body>
 </html>
