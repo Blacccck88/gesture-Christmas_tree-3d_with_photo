@@ -370,7 +370,11 @@ function updateTracker(tracker, a) {
             tracker.pinching = true;
             tracker.pinchReleaseFrames = 0;
         }
-    } else if (a.pinch > G.pinchExit) {
+    } else if (a.pinch > G.pinchExit || a.reach < G.pinchMinReach) {
+        // 松开（pinch 变大）或手指蜷成拳（reach 掉到下限以下）都算释放。
+        // 只按 pinch 判断会漏掉握拳：握拳时拇指贴着食指，pinch 很小永远
+        // 过不了 exit，捏合状态就卡死、照片一直挂在眼前 —— 这就是
+        // 「握紧拳头了却还是一大张图片」的根因。
         if (++tracker.pinchReleaseFrames >= 2) {
             tracker.pinching = false;
             tracker.pinchReleaseFrames = 0;
@@ -500,6 +504,11 @@ function decide() {
         STATE.mode = 'TREE';
         STATE.hand.detected = false;
         handPosInit = false;
+        // 握拳 = 聚成整棵树：把还挂在眼前的照片也送回去，别让它挡着树
+        if (grabbing) {
+            grabbing = false;
+            releasePhoto();
+        }
     } else {
         // 只捏着、或者认不出动作：形态保持不动，别乱切
         if (!live.length) handPosInit = false;
