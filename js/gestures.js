@@ -226,8 +226,16 @@ function analyze(lm) {
     const pinkyMcp = lm[17];
     const midMcp = lm[9];
 
-    const palmWidth = dist3(indexMcp, pinkyMcp);
-    const palmLen = dist3(palm, midMcp);
+    /**
+     * 捏合相关的三个量（palmWidth / pinch / reach）有意用 2D 距离：
+     * MediaPipe 的 z 是模型预测出来的相对深度，两个指尖真正贴到一起的
+     * 捏合瞬间 z 反而会跳，3D 距离被撑大一截，pinch 正好卡在阈值上下 ——
+     * 用户看到的「明明捏上了却不抽照片」大半来自这里。掌宽同样用 2D，
+     * 分子分母口径一致。手指伸直与否仍用 3D：斜对镜头的手，2D 投影会把
+     * 伸直的手指压短，判不出「张开」。
+     */
+    const palmWidth = dist2(indexMcp, pinkyMcp);
+    const palmLen = dist2(palm, midMcp);
     if (palmWidth < 1e-6 || palmLen < 1e-6) return null;
 
     let extended = 0;
@@ -239,8 +247,8 @@ function analyze(lm) {
     return {
         palmWidth,
         extended,
-        pinch: dist3(lm[4], lm[8]) / palmWidth,          // 拇指尖 ↔ 食指尖
-        reach: dist3(lm[8], palm) / palmLen,            // 食指伸出程度
+        pinch: dist2(lm[4], lm[8]) / palmWidth,          // 拇指尖 ↔ 食指尖
+        reach: dist2(lm[8], palm) / palmLen,            // 食指伸出程度
         // 取负号做镜像：预览画面用 CSS scaleX(-1) 翻转过（照镜子的直觉），
         // MediaPipe 给的是未翻转的原始坐标，不翻的话画面和操作对不上。
         x: -(midMcp.x - 0.5) * 2,
@@ -250,6 +258,10 @@ function analyze(lm) {
 
 function dist3(a, b) {
     return Math.hypot(a.x - b.x, a.y - b.y, (a.z ?? 0) - (b.z ?? 0));
+}
+
+function dist2(a, b) {
+    return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
 function createTracker() {
@@ -266,6 +278,7 @@ function createTracker() {
         candidate: null,
         candidateCount: 0,
         pinching: false,
+        pinchReleaseFrames: 0,
     };
 }
 
@@ -329,11 +342,20 @@ function updateTracker(tracker, a) {
         tracker.y += (a.y - tracker.y) * G.smoothing;
     }
 
-    // 捏合用双阈值滞回：进入要更严，退出要更松
+    // 捏合用双阈值滞回，释放还要连续两帧确认：
+    // 只看单帧的话，捏着保持时 pinch 值抖过 exit 一帧，照片就被误送回去了
     if (!tracker.pinching) {
-        if (a.pinch < G.pinchEnter && a.reach > G.pinchMinReach) tracker.pinching = true;
+        if (a.pinch < G.pinchEnter && a.reach > G.pinchMinReach) {
+            tracker.pinching = true;
+            tracker.pinchReleaseFrames = 0;
+        }
     } else if (a.pinch > G.pinchExit) {
-        tracker.pinching = false;
+        if (++tracker.pinchReleaseFrames >= 2) {
+            tracker.pinching = false;
+            tracker.pinchReleaseFrames = 0;
+        }
+    } else {
+        tracker.pinchReleaseFrames = 0;
     }
 
     const raw = tracker.pinching
